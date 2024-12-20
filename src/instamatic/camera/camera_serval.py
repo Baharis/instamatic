@@ -50,7 +50,7 @@ class CameraServal(CameraBase):
 
         # Upload exposure settings (Note: will do nothing if no change in settings)
         self.conn.set_detector_config(
-            ExposureTime=exposure, TriggerPeriod=exposure + 0.00050001
+            ExposureTime=exposure, TriggerPeriod=exposure + 0.00100001
         )
 
         # Check if measurement is running. If not: start
