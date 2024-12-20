@@ -102,6 +102,9 @@ class CameraServal(CameraBase):
 
         return dim_x, dim_y
 
+    def get_binning(self):
+        return self.default_binsize
+
     def establish_connection(self) -> None:
         """Establish connection to the camera."""
         self.conn = ServalCamera()
