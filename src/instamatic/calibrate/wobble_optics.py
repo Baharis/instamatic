@@ -77,8 +77,8 @@ class OpticsWobbler:
 
 
 def wobble_optics(ctrl, **kwargs) -> None:
-    ow = OpticsWobbler(ctrl)
     ctrl.cam.show_stream()
+    ow = OpticsWobbler(ctrl)
     try:
         while running:
             ow.o1.set()
