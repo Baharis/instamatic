@@ -24,6 +24,23 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 
+def scale_difference(a: dict, b: dict, x: float) -> dict:
+    """Modify b so that the difference between a and b is scaled by X."""
+    b_new = {}
+
+    for key in a:
+        if isinstance(a[key], tuple) and isinstance(b[key], tuple):
+            # Element-wise transformation for tuples
+            b_new[key] = tuple(
+                a_val + x * (b_val - a_val) for a_val, b_val in zip(a[key], b[key])
+            )
+        else:
+            # Direct transformation for single floats
+            b_new[key] = a[key] + x * (b[key] - a[key])
+
+    return b_new
+
+
 class OpticsState:
     variables: List[str] = ['BeamShift']
 
@@ -75,16 +92,25 @@ class OpticsWobbler:
         print('At termination, oscillated variables will reset to initial values.')
         self.states = [self.o0, self.o1, self.o2]
 
+    def exacerbate(self, factor: float = 1) -> None:
+        """Exacerbate the distance between two optics states by a linear
+        factor."""
+        self.o1.values = scale_difference(self.o0.values, self.o1.values, factor)
+        self.o2.values = scale_difference(self.o0.values, self.o2.values, factor)
+
 
 def wobble_optics(ctrl, **kwargs) -> None:
     ctrl.cam.show_stream()
     ow = OpticsWobbler(ctrl)
+    if kwargs['exacerbate'] != 1.0:
+        ow.exacerbate(factor=kwargs['exacerbate'])
+        print(f'New optics states exacerbated by -x = {kwargs["exacerbate"]}:')
     try:
         while running:
             ow.o1.set()
-            time.sleep(1.0)
+            time.sleep(kwargs['period'] / 2)
             ow.o2.set()
-            time.sleep(1.0)
+            time.sleep(kwargs['period'] / 2)
     finally:
         print('Reverting oscillated variables to initial values:')
         print(ow.o0)
@@ -97,10 +123,30 @@ def main() -> None:
         description=description, formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
+    parser.add_argument(
+        '-p',
+        '--period',
+        action='store',
+        default=2.0,
+        type=float,
+        metavar='N',
+        help="""Full wobble period in seconds (default 2.0)""",
+    )
+
+    parser.add_argument(
+        '-x',
+        '--exacerbate',
+        action='store',
+        default=1.0,
+        type=float,
+        metavar='X',
+        help="""If given, increase the delta between position 0 and 1/2 by this factor (default 1.0)""",
+    )
+
     options = parser.parse_args()
 
     ctrl = controller.initialize()
-    kwargs = {}
+    kwargs = vars(options)
 
     wobble_optics(ctrl, **kwargs)
 
