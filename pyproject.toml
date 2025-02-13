@@ -110,6 +110,7 @@ publishing = [
 "instamatic.find_crystals" = "instamatic.processing.find_crystals:main_entry"
 "instamatic.find_crystals_ilastik" = "instamatic.processing.find_crystals_ilastik:main_entry"
 "instamatic.learn" = "scripts.learn:main_entry"
+"instamatic.wobble_optics" = "instamatic.calibrate.wobble_optics:main"
 # server
 "instamatic.temserver" = "instamatic.server.tem_server:main"
 "instamatic.camserver" = "instamatic.server.cam_server:main"
