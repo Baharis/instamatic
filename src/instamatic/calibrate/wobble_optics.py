@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import time
 from textwrap import dedent
 from typing import List
 
 from instamatic import controller
+
+running = True
+
+
+def signal_handler(sig, frame):
+    """Handles Ctrl+C gracefully."""
+    global running
+    print('\nCtrl+C detected. Stopping wobble...')
+    running = False
+
+
+# Register the signal handler
+signal.signal(signal.SIGINT, signal_handler)
 
 
 class OpticsState:
@@ -66,13 +80,11 @@ def wobble_optics(ctrl, **kwargs) -> None:
     ow = OpticsWobbler(ctrl)
     ctrl.cam.show_stream()
     try:
-        while True:
+        while running:
             ow.o1.set()
             time.sleep(1.0)
             ow.o2.set()
             time.sleep(1.0)
-    except KeyboardInterrupt:
-        print('Keyboard interrupt.')
     finally:
         print('Reverting oscillated variables to initial values:')
         print(ow.o0)
