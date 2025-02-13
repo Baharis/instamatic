@@ -88,7 +88,7 @@ class OpticsWobbler:
         print(self.o2)
         print()
         print('Oscillating continuously between positions 1 and 2...')
-        print('In order to stop, press <CTRL+C> or <CTRL+BREAK>.')
+        print('In order to stop, press <CTRL+C> (a few times if needed).')
         print('At termination, oscillated variables will reset to initial values.')
         self.states = [self.o0, self.o1, self.o2]
 
