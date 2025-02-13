@@ -105,6 +105,8 @@ def wobble_optics(ctrl, **kwargs) -> None:
     if kwargs['exacerbate'] != 1.0:
         ow.exacerbate(factor=kwargs['exacerbate'])
         print(f'New optics states exacerbated by -x = {kwargs["exacerbate"]}:')
+        print(ow.o1)
+        print(ow.o2)
     try:
         while running:
             ow.o1.set()
