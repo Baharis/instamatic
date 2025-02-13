@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from instamatic.exceptions import TEMValueError
 from instamatic.microscope.base import MicroscopeBase
 
 
@@ -48,6 +49,10 @@ class DiffFocus(Lens):
         self._getter = self._tem.getDiffFocus
         self._setter = self._tem.setDiffFocus
         self.is_defocused = False
+
+    def get(self) -> int:
+        """Monkey patch to ignore the diffFocus error for the time being."""
+        return -1
 
     def set(self, value: int, confirm_mode: bool = True):
         """confirm_mode: verify that TEM is set to the correct mode ('diff').
