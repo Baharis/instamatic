@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -486,6 +486,98 @@ class TEMController:
                 # print(f"No such key: `{key}`")
                 pass
 
+        return dct
+
+    def to_dict2(self, *keys) -> dict:
+        """A version of to_dict that runs sequentially and documents times."""
+        # Each of these costs about 40-60 ms per call on a JEOL 2100, stage is 265 ms per call
+        funcs = {
+            'FunctionMode': self.tem.getFunctionMode,
+            'GunShift': self.gunshift.get,
+            'GunTilt': self.guntilt.get,
+            'BeamShift': self.beamshift.get,
+            'BeamTilt': self.beamtilt.get,
+            'ImageShift1': self.imageshift1.get,
+            'ImageShift2': self.imageshift2.get,
+            'DiffShift': self.diffshift.get,
+            'StagePosition': self.stage.get,
+            'Magnification': self.magnification.get,
+            'DiffFocus': self.difffocus.get,
+            'Brightness': self.brightness.get,
+            'SpotSize': self.tem.getSpotSize,
+        }
+
+        dct = {}
+
+        if 'all' in keys or not keys:
+            keys = funcs.keys()
+
+        t0: Dict[str, int] = {}
+        t1: Dict[str, int] = {}
+
+        for k in keys:
+            try:
+                t0[k] = time.perf_counter_ns()
+                dct[k] = funcs[k]()
+            except ValueError:
+                # print(f"No such key: `{key}`")
+                pass
+            finally:
+                t1[k] = time.perf_counter_ns()
+
+        for k in keys:
+            print(f'{k:40s}: {t0[k]:>9d} - {t1[k]:>9d} = {t1[k]-t0[k]:>9d} ns')
+        print(f'TOTAL: {max(t1.values()) - min(t0.values())} ns')
+
+        return dct
+
+    def to_dict3(self, *keys) -> dict:
+        """Parallel version of to_dict3 using threads."""
+        funcs = {
+            'FunctionMode': self.tem.getFunctionMode,
+            'GunShift': self.gunshift.get,
+            'GunTilt': self.guntilt.get,
+            'BeamShift': self.beamshift.get,
+            'BeamTilt': self.beamtilt.get,
+            'ImageShift1': self.imageshift1.get,
+            'ImageShift2': self.imageshift2.get,
+            'DiffShift': self.diffshift.get,
+            'StagePosition': self.stage.get,
+            'Magnification': self.magnification.get,
+            'DiffFocus': self.difffocus.get,
+            'Brightness': self.brightness.get,
+            'SpotSize': self.tem.getSpotSize,
+        }
+
+        if 'all' in keys or not keys:
+            keys = funcs.keys()
+
+        dct = {}
+        t0: Dict[str, int] = {}
+        t1: Dict[str, int] = {}
+
+        with ThreadPoolExecutor() as executor:
+            futures = {}
+
+            for key in keys:
+                t0[key] = time.perf_counter_ns()
+                try:
+                    futures[executor.submit(funcs[key])] = key
+                except Exception as e:
+                    print(f'Error submitting task for {key}: {e}')
+
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    dct[key] = future.result()
+                except Exception as e:
+                    print(f'Error retrieving result for {key}: {e}')
+                finally:
+                    t1[key] = time.perf_counter_ns()
+
+        for k in keys:
+            print(f'{k:40s}: {t0[k]:>9d} - {t1[k]:>9d} = {t1[k]-t0[k]:>9d} ns')
+        print(f'TOTAL: {max(t1.values()) - min(t0.values())} ns')
         return dct
 
     def from_dict(self, dct: dict):
