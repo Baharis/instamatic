@@ -424,7 +424,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         print_run_summary(summ)
         results.append(res)
     print_aggregated_table(results)
-    save_raw_csv(results)
+    try:
+        save_raw_csv(results)
+    except PermissionError:
+        pass
     generate_plots(results)
 
     print('\n=== benchmark_movie_rates: finished ===')
