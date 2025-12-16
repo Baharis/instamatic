@@ -40,12 +40,13 @@ class EdgeSweeper(Sweeper):
 
     step: int_nm = 10_000  # largest step size allowed
     precision: int_nm = 1  # smallest step size allowed
-    threshold: float = 0.01  # fraction of light_max that signals the edge
+    threshold: float = 0.05  # fraction of light_max that signals the edge
     light_max: int = -1  # maximum light observed at any point by any sweeper
 
     def peak(self) -> int:
         """Return light (image sum) at current position, update light max."""
-        light = int(_ctrl.get_image().sum())
+        img, _ = _ctrl.get_image()
+        light = int(img.sum())
         EdgeSweeper.light_max = max(light, EdgeSweeper.light_max)
         return light
 
@@ -70,6 +71,7 @@ class CrudeEdgeSweeper(EdgeSweeper):
             dy: float = self.heading[1].item() * self.step
             self.walk(dx=dx, dy=dy)
             light_here: int = self.peak()
+        print(f'CRUDE EDGE POSITION: {self.position}')
 
 
 class BinaryEdgeSweeper(EdgeSweeper):
@@ -98,6 +100,7 @@ class BinaryEdgeSweeper(EdgeSweeper):
             else:
                 _mult = 0.5
                 _step = -_mult * abs(_step)
+        print(f'BINARY EDGE POSITION: {self.position}')
 
 
 class RectangularGridWindow:
@@ -262,6 +265,8 @@ class RectangularGridWindow:
         ax.set_xlabel('x / nm')
         ax.set_ylabel('y / nm')
 
+        plt.show()
+
 
 @dataclass
 class XSweep:
@@ -273,4 +278,9 @@ class XSweep:
 
 if __name__ == '__main__':
     rgw = RectangularGridWindow.from_star_search()
+    for a in 'center_x center_y width height theta center w_axis h_axis corners'.split():
+        try:
+            print(f'{a}: {getattr(rgw, a)}')
+        except Exception:
+            pass
     rgw.plot()
