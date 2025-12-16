@@ -4,19 +4,18 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Polygon
 from scipy.optimize import minimize
 from typing_extensions import Literal, Self
 
 from instamatic._typing import float_nm, int_nm
+from instamatic.controller import TEMController, _ctrl, initialize
 from instamatic.utils.iterating import pairwise
 
-if TYPE_CHECKING:
-    from instamatic.controller import TEMController
-
-
-global _ctrl
-_ctrl: TEMController
+if not _ctrl:
+    _ctrl: TEMController = initialize()
 
 
 X = np.array([1, 0], dtype=float)
@@ -47,7 +46,7 @@ class EdgeSweeper(Sweeper):
     def peak(self) -> int:
         """Return light (image sum) at current position, update light max."""
         light = int(_ctrl.get_image().sum())
-        EdgeSweeper.light_max = max(light, self.light_max)
+        EdgeSweeper.light_max = max(light, EdgeSweeper.light_max)
         return light
 
     def walk(self, dx: float, dy: float) -> None:
@@ -79,8 +78,10 @@ class BinaryEdgeSweeper(EdgeSweeper):
     def breed(self, other: Self) -> Self:
         """Return a new instance with mean heading and position."""
         o = (self.position + other.position) / 2
-        h = (s := self.heading + other.heading) / float(np.linalg.norm(s))
-        return self.__class__(origin=o, heading=h)
+        n = np.linalg.norm(s := self.heading + other.heading)
+        if n == 0:
+            raise ValueError('Degenerate bisector')
+        return self.__class__(origin=o, heading=s / n)
 
     def sweep(self) -> None:
         """Bin-search the edge based on peaked light vs max * threshold."""
@@ -145,7 +146,7 @@ class RectangularGridWindow:
     @classmethod
     def from_star_search(cls, order: Literal[1, 2, 3, 4, 5] = 3) -> Self:
         """Return new using `EdgeSweeper`s scanning around current position."""
-        origin = np.array(*_ctrl.stage.xy, dtype=float)
+        origin = np.array(_ctrl.stage.xy, dtype=float)
         css: dict[str, CrudeEdgeSweeper] = {
             '+X': CrudeEdgeSweeper(origin=origin, heading=+X),
             '-X': CrudeEdgeSweeper(origin=origin, heading=-X),
@@ -154,8 +155,8 @@ class RectangularGridWindow:
         }
         for cs in css.values():
             cs.sweep()
-        center_x = (css['+X'].position[0] - css['-X'].position[0]) / 2
-        center_y = (css['+Y'].position[0] - css['-Y'].position[0]) / 2
+        center_x = (css['+X'].position[0] + css['-X'].position[0]) / 2
+        center_y = (css['+Y'].position[1] + css['-Y'].position[1]) / 2
         center = np.array([center_x, center_y], dtype=float)
 
         bss = [BinaryEdgeSweeper(origin=center, heading=d) for d in (X, Y, -X, -Y)]
@@ -187,7 +188,9 @@ class RectangularGridWindow:
         theta0 = np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1])
         guess = np.array([xys_com[0], xys_com[1], width0, height0, theta0])
         res = minimize(cls.edge_dist2_sum, guess, args=(edge_xys,), method='Powell')
-        return cls(*res.x)
+        new = cls(*res.x)
+        new._edge_xys = edge_xys
+        return new
 
     def x_intersections(self, y: int_nm) -> Optional[tuple[float, float]]:
         """Return (x_min, x_max) for a horizontal line intersecting at y."""
@@ -216,6 +219,49 @@ class RectangularGridWindow:
                 x_end = int(x_intersections[(i + 1) % 2])
                 yield XSweep(i=i, x=x_start, y=y, d=x_end - x_start)
 
+    def plot(self, ax=None, pad: float = 0.1) -> None:
+        """Plot a simple visual representation of the window geometry."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        corners = self.corners
+        cx, cy = self.center
+        xmin, ymin = corners.min(axis=0)
+        xmax, ymax = corners.max(axis=0)
+        dx, dy = xmax - xmin, ymax - ymin
+
+        ax.set_facecolor('0.85')
+        ax.add_patch(
+            Polygon(
+                corners,
+                closed=True,
+                facecolor='white',
+                edgecolor='black',
+                linewidth=1.5,
+                zorder=1,
+            )
+        )
+
+        ax.plot(corners[:, 0], corners[:, 1], 'ro', zorder=2)
+        ax.plot(cx, cy, 'r+', markersize=10, markeredgewidth=2, zorder=3)
+
+        wx, wy = self.w_axis
+        hx, hy = self.h_axis
+        ax.arrow(cx, cy, wx, wy, color='C0', width=0, head_width=0, zorder=4)
+        ax.arrow(cx, cy, -wx, -wy, color='C0', width=0, head_width=0, zorder=4)
+        ax.arrow(cx, cy, hx, hy, color='C1', width=0, head_width=0, zorder=4)
+        ax.arrow(cx, cy, -hx, -hy, color='C1', width=0, head_width=0, zorder=4)
+
+        if hasattr(self, '_edge_xys'):
+            xys = self._edge_xys
+            ax.plot(xys[:, 0], xys[:, 1], 'bx', markersize=6, zorder=5)
+
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xlim(xmin - pad * dx, xmax + pad * dx)
+        ax.set_ylim(ymin - pad * dy, ymax + pad * dy)
+        ax.set_xlabel('x / nm')
+        ax.set_ylabel('y / nm')
+
 
 @dataclass
 class XSweep:
@@ -223,3 +269,8 @@ class XSweep:
     x: int_nm  # starting x position
     y: int_nm  # starting y position
     d: int_nm  # total x span to cover
+
+
+if __name__ == '__main__':
+    rgw = RectangularGridWindow.from_star_search()
+    rgw.plot()
