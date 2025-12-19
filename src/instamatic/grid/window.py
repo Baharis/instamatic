@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from itertools import chain
+from typing import Literal, Optional, Sequence
+
+import numpy as np
+from matplotlib import pyplot as plt
+from matplotlib.patches import Polygon
+from scipy.optimize import minimize
+from typing_extensions import Self
+
+from instamatic._typing import float_nm, int_nm
+from instamatic.controller import TEMController, _ctrl, initialize
+from instamatic.grid.sweepers import BinaryEdgeSweeper, EdgeSweeperTeam, MarchingEdgeSweeper
+from instamatic.utils.iterating import pairwise
+
+if not _ctrl:
+    _ctrl: TEMController = initialize()
+
+
+X = np.array([1, 0], dtype=float)
+Y = np.array([0, 1], dtype=float)
+
+
+class ConvexPolygonGridWindow(ABC):
+    """Describes one convex polygon window without assumptions about grid."""
+
+    center: np.ndarray = ...
+    corners: Sequence[np.ndarray] = ...
+
+    @classmethod
+    def from_sweeping(cls, order: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = 3) -> Self:
+        """Return new using `EdgeSweeper`s scanning around current position."""
+        origin = np.array(_ctrl.stage.xy, dtype=int)
+        team = str(origin)
+        _ = EdgeSweeperTeam(name=team)
+
+        # define and sweep with initial marching sweepers to approx. grid center
+        dirs = [+X, -X, +Y, -Y]
+        mess = [MarchingEdgeSweeper(origin=origin, heading=d, team=team) for d in dirs]
+        for mes in mess:
+            mes.sweep()
+        center_x = (mess[0].position[0] + mess[1].position[0]) / 2
+        center_y = (mess[2].position[1] + mess[3].position[1]) / 2
+        center = np.array([center_x, center_y], dtype=float)
+
+        # define binary sweepers, step to edge of marchers-probed region & sweep
+        mess_position_pairs = list(pairwise([mes.position for mes in mess], closed=True))
+        bess = [BinaryEdgeSweeper(origin=center, heading=d) for d in (X, Y, -X, -Y)]
+        for bes in bess:
+            dists = [bes.dist2segment(*p1, *p2) for p1, p2 in mess_position_pairs]
+            safe_dist = min(dists) - bes.team.step_size
+            if np.isfinite(safe_dist) and safe_dist > 0:
+                bes.step(safe_dist)
+            bes.sweep()
+
+        # for each order, create a new generation of beam sweepers and sweep
+        def bisectors(sweepers: list[BinaryEdgeSweeper]) -> list[BinaryEdgeSweeper]:
+            new = [a.breed(b) for a, b in pairwise(sweepers, closed=True)]
+            for ns in new:
+                ns.sweep()
+            return new
+
+        for _ in range(1, order):
+            bess = list(chain.from_iterable(zip(bess, bisectors(bess))))
+
+        edge_xy = np.vstack([bes.position for bes in bess])  # Nx2
+        return cls.from_edge_xys(edge_xy)  # TODO continue refactoring
+
+    @classmethod
+    @abstractmethod
+    def from_edge_xys(cls, edge_xy: np.ndarray) -> Self: ...
+
+    def plot(self, ax=None, pad: float = 0.1) -> None:
+        """Plot a simple visual representation of the window geometry."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        corners = self.corners
+        cx, cy = self.center
+        xmin, ymin = corners.min(axis=0)
+        xmax, ymax = corners.max(axis=0)
+        dx, dy = xmax - xmin, ymax - ymin
+
+        ax.set_facecolor('0.85')
+        ax.add_patch(
+            Polygon(
+                corners,
+                closed=True,
+                facecolor='white',
+                edgecolor='black',
+                linewidth=1.5,
+                zorder=1,
+            )
+        )
+
+        ax.plot(corners[:, 0], corners[:, 1], 'ro', zorder=2)
+        ax.plot(cx, cy, 'r+', markersize=10, markeredgewidth=2, zorder=3)
+
+        if hasattr(self, '_edge_xys'):
+            xys = self._edge_xys
+            ax.plot(xys[:, 0], xys[:, 1], 'bx', markersize=6, zorder=5)
+
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xlim(xmin - pad * dx, xmax + pad * dx)
+        ax.set_ylim(ymin - pad * dy, ymax + pad * dy)
+        ax.set_xlabel('x / nm')
+        ax.set_ylabel('y / nm')
+
+        plt.show()
+
+    def x_intersections(self, y: float_nm) -> Optional[tuple[float, float]]:
+        """Return (x_min, x_max) for a horizontal line intersecting at y."""
+        intersection_xs: list[float] = []
+        for x1, y1, x2, y2 in pairwise(self.corners, closed=True):
+            if y1 == y2:  # work with edge case , close to zero
+                continue
+            intersection_fraction = (y - y1) / (y2 - y1)
+            if not 0 < intersection_fraction < 1:
+                continue  # does not intersect
+            intersection_xs.append(x1 + (x2 - x1) * intersection_fraction)
+        if len(intersection_xs) < 2:
+            return None
+        return min(intersection_xs), max(intersection_xs)
+
+
+class RectangularGridWindow(ConvexPolygonGridWindow):
+    """Describes one rectangular window without assumptions about the grid.
+
+    Geometry is described using five immutable float scalars (nm / radian):
+
+    - center_x: coordinate of the window center on the X axis;
+    - center_y: coordinate of the window center on the Y axis;
+    - width: length of window side aligned with the direction of X axis;
+    - height: length of window side aligned with the direction or Y axis;
+    - theta: signed angle from X towards X-aligned edge (positive towards Y);
+    """
+
+    def __init__(self, x: float, y: float, w: float, h: float, t: float):
+        t = (t + (np.pi / 2)) % np.pi - (np.pi / 2)  # cast to [-pi/2, pi/2]
+        if not -np.pi / 4 < t < np.pi / 4:  # cast to [-pi/4, pi/4]
+            w, h, t = h, w, (np.pi - t) % np.pi - np.pi / 2
+
+        self.center_x: float_nm = x
+        self.center_y: float_nm = y
+        self.width = w = abs(w)
+        self.height = h = abs(h)
+        self.theta: float = t  # expressed in radian
+
+        self.center = c = np.array([x, y], dtype=float)
+        self.w_axis = wa = 0.5 * w * np.array([np.cos(t), np.sin(t)], dtype=float)
+        self.h_axis = ha = 0.5 * h * np.array([-np.sin(t), np.cos(t)], dtype=float)
+        self.corners = np.vstack([c + wa + ha, c + wa - ha, c - wa - ha, c - wa + ha])
+
+    @classmethod
+    def from_edge_xys(cls, edge_xys: np.ndarray) -> Self:
+        """Return new by fitting the edge to a Nx2 list of edge positions."""
+        xys_com = np.mean(edge_xys, axis=0)
+        xys_deltas = edge_xys - xys_com
+        xys_cov = np.cov(xys_deltas.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(xys_cov)
+        eigenvector_proj = xys_deltas @ eigenvectors
+        width0 = eigenvector_proj[:, 1].max() - eigenvector_proj[:, 1].min()
+        height0 = eigenvector_proj[:, 0].max() - eigenvector_proj[:, 0].min()
+        theta0 = np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1])
+        guess = np.array([xys_com[0], xys_com[1], width0, height0, theta0])
+        res = minimize(cls.edge_dist2_sum, guess, args=(edge_xys,), method='Powell')
+        new = cls(*res.x)
+        new._edge_xys = edge_xys
+        return new
+
+    @staticmethod
+    def edge_d2_sum(geom: tuple[float, float, float, float, float], xys: np.ndarray) -> float:
+        """scipy.optimize.minimize fitting func; for geometry see cls docs."""
+        center_x, center_y, width, height, theta = geom
+        center = np.array([center_x, center_y], dtype=float)
+        w_axis = 0.5 * width * np.array([np.cos(theta), np.sin(theta)])
+        h_axis = 0.5 * height * np.array([-np.sin(theta), np.cos(theta)])
+        w_axis_n = w_axis / np.linalg.norm(w_axis)
+        h_axis_n = h_axis / np.linalg.norm(h_axis)
+        d1 = np.abs(np.dot(xys - (center + w_axis), w_axis_n))
+        d2 = np.abs(np.dot(xys - (center - w_axis), w_axis_n))
+        d3 = np.abs(np.dot(xys - (center + h_axis), h_axis_n))
+        d4 = np.abs(np.dot(xys - (center - h_axis), h_axis_n))
+        return np.sum(np.min([d1, d2, d3, d4], axis=0) ** 2)
