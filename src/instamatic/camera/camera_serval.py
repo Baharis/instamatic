@@ -159,27 +159,21 @@ class CameraServal(CameraBase):
             self.conn.destination = {  # listen mode: serval waits for us to connect
                 'Image': [
                     {
-                        'Base': f'tcp://listen@0.0.0.0:{tcp_port}',
+                        'Base': f'tcp://connect@191.0.0.1:{tcp_port}',
                         'Format': 'jsonimage',
                         'Mode': 'count',
                     }
                 ]
             }
 
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(max(2.0, (exposure + self.dead_time) * 5))
-            for attempt in range(10):
-                try:
-                    sock.connect((tcp_host, tcp_port))
-                    break
-                except ConnectionRefusedError:
-                    if attempt == 9:
-                        raise
-                    time.sleep(0.05)
-
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('191.0.0.1', tcp_port))
+            listener.listen(1)
+            self.conn.measurement_start()
+            sock, addr = listener.accept()
+            listener.close()
             with sock:
-                self.conn.measurement_start()
                 yield from self._tcp_stream(sock, n_frames)
 
         finally:
