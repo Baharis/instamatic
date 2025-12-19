@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import math
+import socket
+import time
 from io import BytesIO
 from itertools import batched
 from typing import Generator, List, Optional, Sequence, Tuple, Union
+from urllib.parse import urlparse
 
 import numpy as np
 import tifffile
@@ -30,6 +34,8 @@ class CameraServal(CameraBase):
     MIN_EXPOSURE = 0.000001
     MAX_EXPOSURE = 10.0
     BAD_EXPOSURE_MSG = 'Requested exposure exceeds native Serval support (>0-10s)'
+    TCP_CHUNK_SIZE = 4096
+    TCP_PORT_OFFSET = +1  # TCP PORT = HTTP_PORT + TCP_PORT_OFFSET
 
     def __init__(self, name='serval'):
         """Initialize camera module."""
@@ -122,19 +128,27 @@ class CameraServal(CameraBase):
     def get_movie(
         self, n_frames: int, exposure: Optional[float] = None, **kwargs
     ) -> Generator[np.ndarray, None, None]:
-        """A generator yielding images using a mode with minimal dead time. If
-        the exposure is not given, the default value is read from the config
-        file. Binning is ignored.
+        """Yield `n_frames` images received via a TCP stream with minimal dead
+        time. If the exposure is not given, the default value is read from the
+        config file. Binning is ignored.
 
         n_frames: `int`
             Number of frames to collect
         exposure: `float` or `None`
             Exposure time in seconds.
         """
-        logger.debug(f'Collecting {n_frames}-frame movie with exposure {exposure} s')
-        mode = 'AUTOTRIGSTART_TIMERSTOP' if self.dead_time else 'CONTINUOUS'
+        logger.debug(f'Collecting {n_frames}-frame movie with exposure {exposure} s via TCP')
+        mode: str = 'AUTOTRIGSTART_TIMERSTOP' if self.dead_time else 'CONTINUOUS'
+        exposure: float = self.default_exposure if exposure is None else exposure
+
+        http_url = urlparse(self.conn.url)
+        tcp_host = http_url.hostname
+        tcp_port = (http_url.port or 8080) + self.TCP_PORT_OFFSET
+
         self.conn.measurement_stop()
         previous_config = self.conn.detector_config
+        previous_destination = self.conn.destination
+
         try:
             self.conn.set_detector_config(
                 TriggerMode=mode,
@@ -142,13 +156,111 @@ class CameraServal(CameraBase):
                 TriggerPeriod=exposure + self.dead_time,
                 nTriggers=n_frames,
             )
-            self.conn.measurement_start()
-            for i in range(n_frames):
-                response = self.conn.get_request('/measurement/image')
-                yield tifffile.imread(BytesIO(response.content))
+            self.conn.destination = {  # listen mode: serval waits for us to connect
+                'Image': [
+                    {
+                        'Base': f'tcp://listen@0.0.0.0:{tcp_port}',
+                        'Format': 'jsonimage',
+                        'Mode': 'count',
+                    }
+                ]
+            }
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(max(2.0, (exposure + self.dead_time) * 5))
+            for attempt in range(10):
+                try:
+                    sock.connect((tcp_host, tcp_port))
+                    break
+                except ConnectionRefusedError:
+                    if attempt == 9:
+                        raise
+                    time.sleep(0.05)
+
+            with sock:
+                self.conn.measurement_start()
+                yield from self._tcp_stream(sock, n_frames)
+
         finally:
-            self.conn.measurement_stop()
-            self.conn.set_detector_config(**previous_config)
+            try:
+                self.conn.measurement_stop()
+            except Exception as e:
+                logger.error(f'Error stopping measurement: {e}')
+            try:
+                self.conn.destination = previous_destination
+                self.conn.set_detector_config(**previous_config)
+            except Exception as e:
+                logger.error(f'Error restoring config: {e}')
+
+    def _tcp_stream(self, sock: socket.socket, n_frames: int) -> Generator[np.ndarray]:
+        """Parse 'jsonimage', yield images from a raw data via TCP socket."""
+        buffer = bytearray()
+        frames_yielded = 0
+
+        while frames_yielded < n_frames:  # Read until enough to identify the JSON header
+            chunk = sock.recv(self.TCP_CHUNK_SIZE)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+
+            while True:
+                if not buffer:
+                    break
+
+                # Scanning json-image for {}-delimited JSON header
+                brace_depth: int = 0
+                header_start_idx: int = -1
+                header_end_idx: int = -1
+                next_closing_idx: int = -1
+                scanning_idx = 0
+                while header_end_idx < 0:
+                    if next_closing_idx < scanning_idx:
+                        try:
+                            next_closing_idx = buffer.index(b'}', scanning_idx)
+                        except ValueError:
+                            break  # read data until a closing bracket is found
+                    try:
+                        next_opening_idx = buffer.index(b'{', scanning_idx, next_closing_idx)
+                        if brace_depth == 0:
+                            header_start_idx = next_opening_idx
+                    except ValueError:
+                        brace_depth -= 1
+                        scanning_idx = next_closing_idx + 1
+                        if brace_depth == 0:
+                            header_end_idx = next_closing_idx + 1
+                    else:
+                        brace_depth += 1
+                        scanning_idx = next_opening_idx + 1
+                if header_end_idx == -1:
+                    break  # propagate break to read more
+
+                # Reading in and parsing information in the json header
+                json_bytes = buffer[header_start_idx:header_end_idx]
+                header_str = json_bytes.decode('utf-8')
+                header_dict = json.loads(header_str)
+                width_default, height_default = self.get_image_dimensions()
+                width = header_dict.get('width', width_default)
+                height = header_dict.get('height', height_default)
+                bit_depth = header_dict.get('bitDepth', 16)
+                data_size = header_dict.get('dataSize', width * height * bit_depth // 8)
+                del buffer[:header_end_idx]
+
+                # Reading in missing data
+                if len(buffer) < data_size:
+                    while (missing := data_size - len(buffer)) > 0:
+                        chunk = sock.recv(min(missing, 65536))  # read large chunks
+                        if not chunk:
+                            raise ConnectionError('Socket closed mid-frame')
+                        buffer.extend(chunk)
+                dt = np.uint32 if bit_depth > 16 else np.uint16 if bit_depth > 8 else np.uint8
+                img_array = np.frombuffer(buffer[:data_size], dtype=dt)
+                shape = (height, width) if width and height else self.get_image_dimensions()
+                yield img_array.reshape(shape)
+                frames_yielded += 1
+                del buffer[:data_size]
+                if frames_yielded >= n_frames:
+                    return
 
     def get_image_dimensions(self) -> Tuple[int, int]:
         """Get the binned dimensions reported by the camera."""
@@ -169,19 +281,8 @@ class CameraServal(CameraBase):
         )
         self.conn.set_detector_config(**self.detector_config)
 
-        self.conn.destination = {
-            'Image': [
-                {
-                    # Where to place the preview files (HTTP end-point: GET localhost:8080/measurement/image)
-                    'Base': 'http://localhost',
-                    # What (image) format to provide the files in.
-                    'Format': 'tiff',
-                    # What data to build a frame from
-                    'Mode': 'count',
-                    # 'QueueSize': 2,
-                }
-            ],
-        }
+        img_dest = {'Base': 'http://localhost', 'Format': 'tiff', 'Mode': 'count'}
+        self.conn.destination = {'Image': [img_dest]}
 
     def release_connection(self) -> None:
         """Release the connection to the camera."""
