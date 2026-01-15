@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import socket
-import time
+import threading
 from io import BytesIO
 from itertools import batched
 from typing import Generator, List, Optional, Sequence, Tuple, Union
@@ -149,13 +149,12 @@ class CameraServal(CameraBase):
         previous_config = self.conn.detector_config
         previous_destination = self.conn.destination
 
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            self.conn.set_detector_config(
-                TriggerMode=mode,
-                ExposureTime=exposure,
-                TriggerPeriod=exposure + self.dead_time,
-                nTriggers=n_frames,
-            )
+            listener.bind(('0.0.0.0', tcp_port))
+            listener.listen(1)
+            listener.settimeout(60)
             self.conn.destination = {  # listen mode: serval waits for us to connect
                 'Image': [
                     {
@@ -165,18 +164,33 @@ class CameraServal(CameraBase):
                     }
                 ]
             }
+            self.conn.set_detector_config(
+                TriggerMode=mode,
+                ExposureTime=exposure,
+                TriggerPeriod=exposure + self.dead_time,
+                nTriggers=n_frames,
+            )
 
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind(('191.0.0.1', tcp_port))
-            listener.listen(1)
-            self.conn.measurement_start()
-            sock, addr = listener.accept()
-            listener.close()
+            def trigger_worker():
+                try:
+                    self.conn.measurement_start()
+                except Exception as e:
+                    logger.error(f"Trigger thread failed: {e}")
+
+            trigger_thread = threading.Thread(target=trigger_worker)
+            trigger_thread.start()
+
+            try:
+                sock, addr = listener.accept()
+            except socket.timeout:
+                raise TimeoutError("Serval failed to connect back within 60 seconds.")
             with sock:
                 yield from self._tcp_stream(sock, n_frames)
 
+            trigger_thread.join(timeout=2.0)
+
         finally:
+            listener.close()
             try:
                 self.conn.measurement_stop()
             except Exception as e:
