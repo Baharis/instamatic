@@ -8,12 +8,13 @@ import socket
 import threading
 from io import BytesIO
 from itertools import batched
-from typing import Generator, List, Optional, Sequence, Tuple, Union
+from typing import Generator, Iterator, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
 import numpy as np
 import tifffile
 from serval_toolkit.camera import Camera as ServalCamera
+from typing_extensions import Self
 
 from instamatic.camera.camera_base import CameraBase
 
@@ -34,8 +35,6 @@ class CameraServal(CameraBase):
     MIN_EXPOSURE = 0.000001
     MAX_EXPOSURE = 10.0
     BAD_EXPOSURE_MSG = 'Requested exposure exceeds native Serval support (>0-10s)'
-    TCP_CHUNK_SIZE = 4096
-    TCP_PORT_OFFSET = +1  # TCP PORT = HTTP_PORT + TCP_PORT_OFFSET
 
     def __init__(self, name='serval'):
         """Initialize camera module."""
@@ -142,8 +141,8 @@ class CameraServal(CameraBase):
         exposure: float = self.default_exposure if exposure is None else exposure
 
         http_url = urlparse(self.conn.url)
-        tcp_host = http_url.hostname
-        tcp_port = (http_url.port or 8080) + self.TCP_PORT_OFFSET
+        host = http_url.hostname
+        port = (http_url.port or 8080) + 1
 
         self.conn.measurement_stop()
         previous_config = self.conn.detector_config
@@ -152,16 +151,16 @@ class CameraServal(CameraBase):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            listener.bind(('0.0.0.0', tcp_port))
+            listener.bind(('0.0.0.0', port))
             listener.listen(1)
-            listener.settimeout(60)
-            self.conn.destination = {  # listen mode: serval waits for us to connect
+            new_destination = {
+                'Base': f'tcp://connect@{host}:{port}',
+                'Format': 'jsonimage',
+                'Mode': 'count',
+            }
+            self.conn.destination = {
                 'Image': [
-                    {
-                        'Base': f'tcp://connect@191.0.0.1:{tcp_port}',
-                        'Format': 'jsonimage',
-                        'Mode': 'count',
-                    }
+                    new_destination,
                 ]
             }
             self.conn.set_detector_config(
@@ -171,22 +170,14 @@ class CameraServal(CameraBase):
                 nTriggers=n_frames,
             )
 
-            def trigger_worker():
-                try:
-                    self.conn.measurement_start()
-                except Exception as e:
-                    logger.error(f"Trigger thread failed: {e}")
-
-            trigger_thread = threading.Thread(target=trigger_worker)
+            trigger_thread = threading.Thread(target=self.conn.measurement_start)
             trigger_thread.start()
-
             try:
                 sock, addr = listener.accept()
             except socket.timeout:
-                raise TimeoutError("Serval failed to connect back within 60 seconds.")
+                raise TimeoutError('Serval failed to connect back within 60 seconds.')
             with sock:
-                yield from self._tcp_stream(sock, n_frames)
-
+                yield from ServalMovieDeserializer(sock, n_frames)
             trigger_thread.join(timeout=2.0)
 
         finally:
@@ -200,75 +191,6 @@ class CameraServal(CameraBase):
                 self.conn.set_detector_config(**previous_config)
             except Exception as e:
                 logger.error(f'Error restoring config: {e}')
-
-    def _tcp_stream(self, sock: socket.socket, n_frames: int) -> Generator[np.ndarray]:
-        """Parse 'jsonimage', yield images from a raw data via TCP socket."""
-        buffer = bytearray()
-        frames_yielded = 0
-
-        while frames_yielded < n_frames:  # Read until enough to identify the JSON header
-            chunk = sock.recv(self.TCP_CHUNK_SIZE)
-            if not chunk:
-                break
-            buffer.extend(chunk)
-
-            while True:
-                if not buffer:
-                    break
-
-                # Scanning json-image for {}-delimited JSON header
-                brace_depth: int = 0
-                header_start_idx: int = -1
-                header_end_idx: int = -1
-                next_closing_idx: int = -1
-                scanning_idx = 0
-                while header_end_idx < 0:
-                    if next_closing_idx < scanning_idx:
-                        try:
-                            next_closing_idx = buffer.index(b'}', scanning_idx)
-                        except ValueError:
-                            break  # read data until a closing bracket is found
-                    try:
-                        next_opening_idx = buffer.index(b'{', scanning_idx, next_closing_idx)
-                        if brace_depth == 0:
-                            header_start_idx = next_opening_idx
-                    except ValueError:
-                        brace_depth -= 1
-                        scanning_idx = next_closing_idx + 1
-                        if brace_depth == 0:
-                            header_end_idx = next_closing_idx + 1
-                    else:
-                        brace_depth += 1
-                        scanning_idx = next_opening_idx + 1
-                if header_end_idx == -1:
-                    break  # propagate break to read more
-
-                # Reading in and parsing information in the json header
-                json_bytes = buffer[header_start_idx:header_end_idx]
-                header_str = json_bytes.decode('utf-8')
-                header_dict = json.loads(header_str)
-                width_default, height_default = self.get_image_dimensions()
-                width = header_dict.get('width', width_default)
-                height = header_dict.get('height', height_default)
-                bit_depth = header_dict.get('bitDepth', 16)
-                data_size = header_dict.get('dataSize', width * height * bit_depth // 8)
-                del buffer[:header_end_idx]
-
-                # Reading in missing data
-                if len(buffer) < data_size:
-                    while (missing := data_size - len(buffer)) > 0:
-                        chunk = sock.recv(min(missing, 65536))  # read large chunks
-                        if not chunk:
-                            raise ConnectionError('Socket closed mid-frame')
-                        buffer.extend(chunk)
-                dt = np.uint32 if bit_depth > 16 else np.uint16 if bit_depth > 8 else np.uint8
-                img_array = np.frombuffer(buffer[:data_size], dtype=dt)
-                shape = (height, width) if width and height else self.get_image_dimensions()
-                yield img_array.reshape(shape)
-                frames_yielded += 1
-                del buffer[:data_size]
-                if frames_yielded >= n_frames:
-                    return
 
     def get_image_dimensions(self) -> Tuple[int, int]:
         """Get the binned dimensions reported by the camera."""
@@ -298,6 +220,80 @@ class CameraServal(CameraBase):
         name = self.get_name()
         msg = f"Connection to camera '{name}' released"
         logger.info(msg)
+
+
+class ServalMovieDeserializer(Iterator[np.ndarray]):
+    """Deserializes Serval camera TCP byte stream from socket into images."""
+
+    def __init__(self, sock: socket.socket, n_frames: int):
+        self.sock = sock
+        self.buffer = bytearray(65535)
+        self.buffer_size = 0
+        self.offset = 0
+        self.i_frame = 0
+        self.n_frames = n_frames
+
+        self.width: int = 0
+        self.height: int = 0
+        self.depth: int = 0
+        self.size: int = 0
+        self.dtype: np.dtype = np.uint32
+
+    def find_header_size(self) -> int:
+        """Find the index of curly bracket that closes current header + 1."""
+        bracket_depth: int = 1
+        header_end_idx: int = -1
+        next_closing_idx: int = -1
+        scanning_idx: int = self.offset + 1
+
+        while header_end_idx < 0:
+            if next_closing_idx < scanning_idx:
+                try:
+                    next_closing_idx = self.buffer.index(b'}', scanning_idx)
+                except ValueError:
+                    return -1
+            try:
+                next_opening_idx = self.buffer.index(b'{', scanning_idx, next_closing_idx)
+            except ValueError:
+                bracket_depth -= 1
+                if bracket_depth == 0:
+                    return next_closing_idx + 1
+                scanning_idx = next_closing_idx + 1
+            else:
+                bracket_depth += 1
+                scanning_idx = next_opening_idx + 1
+        return -1
+
+    def reconfigure_from_header(self, header_size: int) -> None:
+        json_bytes = self.buffer[self.offset : header_size]
+        header_str = json_bytes.decode('utf-8')
+        header_dict = json.loads(header_str)
+        self.width = w = header_dict['width']
+        self.height = h = header_dict['height']
+        self.depth = d = header_dict['bitDepth'] // 8
+        self.size = header_dict.get('dataSize', w * h * d)
+        self.dtype = np.uint32 if d > 2 else np.uint16 if d > 1 else np.uint8
+        self.buffer += bytearray(self.n_frames * (header_size + self.size))
+
+    def __next__(self) -> np.ndarray:
+        if self.i_frame >= self.n_frames:
+            raise StopIteration
+        header_size = self.find_header_size()
+        while header_size < 0:
+            self.buffer_size += self.sock.recv_into(memoryview(self.buffer)[self.buffer_size :])
+            header_size = self.find_header_size()
+        if self.i_frame == 0:
+            self.reconfigure_from_header(header_size)
+        image_start = header_size
+        image_end = image_start + self.size
+        while self.buffer_size < image_end:
+            self.buffer_size += self.sock.recv_into(memoryview(self.buffer)[self.buffer_size :])
+        image_view = memoryview(self.buffer)[image_start:image_end]
+        img_array = np.frombuffer(image_view, dtype=self.dtype)
+        image = img_array.reshape((self.height, self.width))
+        self.offset = image_end
+        self.i_frame += 1
+        return image
 
 
 if __name__ == '__main__':
