@@ -8,13 +8,13 @@ import socket
 import threading
 from io import BytesIO
 from itertools import batched
+from math import prod
 from typing import Generator, Iterator, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
 import numpy as np
 import tifffile
 from serval_toolkit.camera import Camera as ServalCamera
-from typing_extensions import Self
 
 from instamatic.camera.camera_base import CameraBase
 
@@ -43,6 +43,7 @@ class CameraServal(CameraBase):
         self.dead_time = (
             self.detector_config['TriggerPeriod'] - self.detector_config['ExposureTime']
         )
+        self.movie_bufsize = 2 * 4 * prod(self.dimensions)
         logger.info(f'Camera {self.get_name()} initialized')
         atexit.register(self.release_connection)
 
@@ -102,21 +103,14 @@ class CameraServal(CameraBase):
     def _get_image_single(self, exposure: float, **_) -> np.ndarray:
         """Request a single frame in the mode in a trigger collection mode."""
         logger.debug(f'Collecting a single image with exposure {exposure} s')
-        # Upload exposure settings (Note: will do nothing if no change in settings)
         self.conn.set_detector_config(
             ExposureTime=exposure,
             TriggerPeriod=exposure + self.dead_time,
         )
-
-        # Check if measurement is running. If not: start
         db = self.conn.dashboard
         if db['Measurement'] is None or db['Measurement']['Status'] != 'DA_RECORDING':
             self.conn.measurement_start()
-
-        # Start the acquisition
         self.conn.trigger_start()
-
-        # Request a frame. Will be streamed *after* the exposure finishes
         response = self.conn.get_request('/measurement/image')
         return tifffile.imread(BytesIO(response.content))
 
@@ -141,8 +135,9 @@ class CameraServal(CameraBase):
         exposure: float = self.default_exposure if exposure is None else exposure
 
         http_url = urlparse(self.conn.url)
-        host = http_url.hostname
-        port = (http_url.port or 8080) + 1
+        tcp_port = (http_url.port or 8080) + 1
+        tcp_base = f'tcp://connect@{http_url.hostname}:{tcp_port}'
+        tcp_dest = {'Base': tcp_base, 'Format': 'jsonimage', 'Mode': 'count'}
 
         self.conn.measurement_stop()
         previous_config = self.conn.detector_config
@@ -150,17 +145,13 @@ class CameraServal(CameraBase):
 
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.settimeout(5.0)
         try:
-            listener.bind(('0.0.0.0', port))
+            listener.bind(('0.0.0.0', tcp_port))
             listener.listen(1)
-            new_destination = {
-                'Base': f'tcp://connect@{host}:{port}',
-                'Format': 'jsonimage',
-                'Mode': 'count',
-            }
             self.conn.destination = {
                 'Image': [
-                    new_destination,
+                    tcp_dest,
                 ]
             }
             self.conn.set_detector_config(
@@ -169,16 +160,13 @@ class CameraServal(CameraBase):
                 TriggerPeriod=exposure + self.dead_time,
                 nTriggers=n_frames,
             )
-
-            trigger_thread = threading.Thread(target=self.conn.measurement_start)
-            trigger_thread.start()
+            threading.Thread(target=self.conn.measurement_start, daemon=True).start()
             try:
                 sock, addr = listener.accept()
             except socket.timeout:
-                raise TimeoutError('Serval failed to connect back within 60 seconds.')
+                raise TimeoutError('Serval failed to connect back within 5 seconds.')
             with sock:
-                yield from ServalMovieDeserializer(sock, n_frames)
-            trigger_thread.join(timeout=2.0)
+                yield from ServalMovieDeserializer(sock, n_frames, self.movie_bufsize)
 
         finally:
             listener.close()
@@ -196,11 +184,7 @@ class CameraServal(CameraBase):
         """Get the binned dimensions reported by the camera."""
         binning = self.get_binning()
         dim_x, dim_y = self.get_camera_dimensions()
-
-        dim_x = int(dim_x / binning)
-        dim_y = int(dim_y / binning)
-
-        return dim_x, dim_y
+        return int(dim_x / binning), int(dim_y / binning)
 
     def establish_connection(self) -> None:
         """Establish connection to the camera."""
@@ -225,75 +209,53 @@ class CameraServal(CameraBase):
 class ServalMovieDeserializer(Iterator[np.ndarray]):
     """Deserializes Serval camera TCP byte stream from socket into images."""
 
-    def __init__(self, sock: socket.socket, n_frames: int):
-        self.sock = sock
-        self.buffer = bytearray(65535)
-        self.buffer_size = 0
-        self.offset = 0
-        self.i_frame = 0
-        self.n_frames = n_frames
-
-        self.width: int = 0
-        self.height: int = 0
-        self.depth: int = 0
+    def __init__(self, sock: socket.socket, n_frames: int, bufsize: int) -> None:
+        self.sock: socket.socket = sock
+        self.buffer = bytearray(bufsize)
+        self.view = memoryview(self.buffer)
+        self.used: int = 0
+        self.i_frame: int = 0
+        self.n_frames: int = n_frames
+        self.shape: tuple[int, int] = (0, 0)
         self.size: int = 0
         self.dtype: np.dtype = np.uint32
 
-    def find_header_size(self) -> int:
-        """Find the index of curly bracket that closes current header + 1."""
-        bracket_depth: int = 1
-        header_end_idx: int = -1
-        next_closing_idx: int = -1
-        scanning_idx: int = self.offset + 1
+    def _recv_more(self) -> None:
+        if not (n := self.sock.recv_into(self.view[self.used :])):
+            raise EOFError
+        self.used += n
 
-        while header_end_idx < 0:
-            if next_closing_idx < scanning_idx:
-                try:
-                    next_closing_idx = self.buffer.index(b'}', scanning_idx)
-                except ValueError:
-                    return -1
-            try:
-                next_opening_idx = self.buffer.index(b'{', scanning_idx, next_closing_idx)
-            except ValueError:
-                bracket_depth -= 1
-                if bracket_depth == 0:
-                    return next_closing_idx + 1
-                scanning_idx = next_closing_idx + 1
-            else:
-                bracket_depth += 1
-                scanning_idx = next_opening_idx + 1
-        return -1
+    def _read_until(self, token: bytes) -> int:
+        while True:
+            idx = self.buffer.find(token, 0, self.used)
+            if idx >= 0:
+                return idx + len(token)
+            self._recv_more()
 
-    def reconfigure_from_header(self, header_size: int) -> None:
-        json_bytes = self.buffer[self.offset : header_size]
-        header_str = json_bytes.decode('utf-8')
+    def read_image_shape_from_header(self, header_size: int) -> None:
+        """Read shape, size, dtype of all images from the first header."""
+        header_str = self.buffer[:header_size].decode('utf-8')
         header_dict = json.loads(header_str)
-        self.width = w = header_dict['width']
-        self.height = h = header_dict['height']
-        self.depth = d = header_dict['bitDepth'] // 8
-        self.size = header_dict.get('dataSize', w * h * d)
+        d = header_dict['bitDepth'] // 8
+        self.shape = (header_dict['height'], header_dict['width'])
+        self.size = header_dict.get('dataSize', prod(self.shape) * d)
         self.dtype = np.uint32 if d > 2 else np.uint16 if d > 1 else np.uint8
-        self.buffer += bytearray(self.n_frames * (header_size + self.size))
 
     def __next__(self) -> np.ndarray:
+        """Recv as much data as needed and use it to yield next frame ASAP."""
         if self.i_frame >= self.n_frames:
             raise StopIteration
-        header_size = self.find_header_size()
-        while header_size < 0:
-            self.buffer_size += self.sock.recv_into(memoryview(self.buffer)[self.buffer_size :])
-            header_size = self.find_header_size()
+        header_end = self._read_until(b'}')
         if self.i_frame == 0:
-            self.reconfigure_from_header(header_size)
-        image_start = header_size
-        image_end = image_start + self.size
-        while self.buffer_size < image_end:
-            self.buffer_size += self.sock.recv_into(memoryview(self.buffer)[self.buffer_size :])
-        image_view = memoryview(self.buffer)[image_start:image_end]
-        img_array = np.frombuffer(image_view, dtype=self.dtype)
-        image = img_array.reshape((self.height, self.width))
-        self.offset = image_end
+            self.read_image_shape_from_header(header_end)
+        while self.used < header_end + self.size:
+            self._recv_more()
+        i, j = header_end, header_end + self.size
+        frame = np.frombuffer(self.buffer[i:j], dtype=self.dtype).reshape(self.shape).copy()
+        self.buffer[: self.used - j] = self.buffer[j : self.used]
+        self.used -= j
         self.i_frame += 1
-        return image
+        return frame
 
 
 if __name__ == '__main__':
