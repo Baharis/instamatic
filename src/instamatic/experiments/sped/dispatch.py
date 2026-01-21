@@ -259,7 +259,3 @@ class DiffHuntWorker(mp.Process):
         header = kwargs.get('header', None)
         fn = str(Path(path).resolve() / f'{buffer_name}_{frame_index:04d}.tiff')
         write_tiff(fname=fn, data=self.frames[frame_index], header=header)
-
-
-def detect_diffraction(frame: np.ndarray) -> bool:
-    return False
