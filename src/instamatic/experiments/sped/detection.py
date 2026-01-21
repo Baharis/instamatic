@@ -8,132 +8,104 @@ from matplotlib.patches import Circle
 from scipy import ndimage as ndi
 
 
-def detect_diffraction_fast(
-    image: np.ndarray,
-    beam_radius_px: int = 40,
-    q: float = 99.9,
-    min_peaks: int = 5,
+def ring_threshold_detection(
+    frame: np.ndarray,
+    min_radius: int = 40,
+    percentile: float = 99.0,
+    threshold_mult: float = 3.0,
+    min_peak_count: int = 10,
+    min_peak_sep: int = 5,
     mask: np.ndarray | None = None,
-    n_radial_bins: int = 20,
-    bg_stat: str = 'median',  # "median" or "q"
-    bg_q: float = 0.8,  # used if bg_stat == "q"
+    n_bins: int = 10,
 ):
     """Fast diffraction detector with radial-binned background subtraction.
 
-    - center estimated via blurred ROI
-    - excludes (mask == False) and excludes rr <= beam_radius_px
-    - estimates background as a function of radius using n_radial_bins shells
-    - subtracts that per-shell background
-    - detects peaks via global quantile threshold on residual
+    - estimate center of incident beam based on a blurred central ROI
+    - excludes (mask == False) and excludes rr <= beam_radius_px regions
+    - estimates background and reflection threshold in `n_bins` radial shells
+    - reflections must exceed `percentile` * `threshold_mult` of their ring
+    - the algorithm is good at finding a small number of strongest reflections
     """
 
-    img = image.astype(np.float32)
+    cy, cx = estimate_beam_center(frame, sigma=3.0)
+    ys, xs = np.indices(frame.shape)
+    rr = np.sqrt((ys - cy) ** 2 + (xs - cx) ** 2)
+    valid = mask.astype(bool) if mask is not None else np.ones(frame.shape, dtype=bool)
+    valid &= rr > min_radius
 
-    # center (fast, robust)
-    cy0, cx0 = np.unravel_index(np.argmax(img), img.shape)
-    cy, cx = estimate_beam_center(image, expected=(cy0, cx0), roi_half=64, sigma=3.0)
-
-    # geometry
-    yy, xx = np.indices(img.shape)
-    rr = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
-
-    # combine masks: user mask AND outside beam radius
-    valid = mask.astype(bool) if mask is not None else np.ones(img.shape, dtype=bool)
-    valid &= rr > beam_radius_px
-
-    vals = img[valid]
-    if vals.size == 0:
-        return {'has_diffraction': False, 'n_peaks': 0, 'mask': valid, 'center': (cy, cx)}
-
-    # --- radial binning setup ---
-    # Bin edges: from beam_radius_px to max radius in valid region
-    r_max = float(rr[valid].max())
-    bin_edges = np.linspace(beam_radius_px, r_max, n_radial_bins + 1).astype(np.float32)
-
-    # Assign each valid pixel to a bin id in [0, n_radial_bins-1]
-    r_valid = rr[valid]
-    bin_id = np.digitize(r_valid, bin_edges) - 1
-    bin_id = np.clip(bin_id, 0, n_radial_bins - 1)
-
-    # --- per-bin background statistic (robust) ---
-    bg_per_bin = np.zeros(n_radial_bins, dtype=np.float32)
-    for b in range(n_radial_bins):
-        v = vals[bin_id == b]
-        if v.size == 0:
-            bg_per_bin[b] = 0.0
-        else:
-            if bg_stat == 'median':
-                bg_per_bin[b] = np.median(v)
-            elif bg_stat == 'q':
-                bg_per_bin[b] = np.quantile(v, bg_q)
-            else:
-                raise ValueError("bg_stat must be 'median' or 'q'")
-
-    # --- subtract radial background ---
-    processed = np.zeros_like(img, dtype=np.float32)
-    processed[valid] = vals - bg_per_bin[bin_id]
-    processed[processed < 0] = 0.0
-
-    # --- peak threshold via global quantile ---
-    pvals = processed[valid]
-    if pvals.size == 0:
-        return {'has_diffraction': False, 'n_peaks': 0, 'mask': valid, 'center': (cy, cx)}
-
-    thr_per_bin = np.zeros(n_radial_bins, dtype=np.float32)
-    for b in range(n_radial_bins):
-        v = pvals[bin_id == b]
-        thr_per_bin[b] = 2 * np.percentile(v, q) if v.size else np.inf
-
-    # Each valid pixel compares against its bin's threshold
-    keep = pvals >= thr_per_bin[bin_id]
-
-    # Build a boolean peak mask efficiently
-    peak_mask = np.zeros_like(valid, dtype=bool)
     valid_idx = np.flatnonzero(valid)
+    if valid_idx.size == 0:
+        return {'has_diffraction': False, 'n_peaks': 0, 'mask': valid, 'center': (cy, cx)}
+
+    vals = frame.flat[valid_idx].astype(np.float32, copy=False)
+    rr_vals = rr.flat[valid_idx].astype(np.float32, copy=False)
+
+    r_max = float(rr_vals.max())
+    bin_edges = np.linspace(min_radius, r_max, n_bins + 1).astype(np.float32)
+
+    bin_ids = np.digitize(rr_vals, bin_edges) - 1
+    np.clip(bin_ids, 0, n_bins - 1, out=bin_ids)
+
+    # Per-bin bg and thresholds (still a small loop)
+    backgrounds = np.zeros(n_bins, dtype=np.float32)
+    thresholds = np.full(n_bins, np.inf, dtype=np.float32)
+
+    # residuals in 1D
+    resid_all = np.zeros_like(vals, dtype=np.float32)
+
+    for b in range(n_bins):
+        sel = bin_ids == b
+        if not np.any(sel):
+            continue
+        v = vals[sel]
+        bg = np.median(v)
+        backgrounds[b] = bg
+
+        r = v - bg
+        r[r < 0] = 0.0
+        resid_all[sel] = r
+
+        thresholds[b] = threshold_mult * np.percentile(r, percentile) if r.size else np.inf
+
+    # Candidate selection purely in 1D
+    keep = resid_all >= thresholds[bin_ids]
+
+    # Scatter to 2D only once (needed for clustering / argmax)
+    processed = np.zeros(frame.shape, dtype=np.float32)
+    processed.flat[valid_idx] = resid_all
+
+    peak_mask = np.zeros(frame.shape, dtype=bool)
     peak_mask.flat[valid_idx[keep]] = True
 
-    peaks = peaks_one_per_cluster(peak_mask, processed, min_dist=5)
+    peaks = peaks_one_per_cluster(peak_mask, processed, min_dist=min_peak_sep)
     n_peaks = int(peaks.shape[0])
 
-    # Bin radii (useful for plotting)
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
     return {
-        'has_diffraction': n_peaks >= min_peaks,
+        'has_diffraction': n_peaks >= min_peak_count,
         'n_peaks': n_peaks,
         'peaks': peaks,
         'center': (cy, cx),
-        'beam_radius': beam_radius_px,
-        'thr_per_bin': thr_per_bin,
+        'beam_radius': min_radius,
+        'thr_per_bin': thresholds,
         'mask': valid,
-        # radial background diagnostics:
-        'radial_bin_edges': bin_edges,  # length n_bins+1
-        'radial_bin_centers': bin_centers,  # length n_bins
-        'bg_per_bin': bg_per_bin,  # length n_bins
-        'n_radial_bins': n_radial_bins,
+        'radial_bin_edges': bin_edges,
+        'radial_bin_centers': bin_centers,
+        'bg_per_bin': backgrounds,
+        'n_radial_bins': n_bins,
     }
 
 
-def estimate_beam_center(
-    image: np.ndarray,
-    expected: tuple[int, int] | None,
-    roi_half: int = 64,
-    sigma: float = 3.0,
-):
-    """Estimate beam center by Gaussian-blurring a small ROI and taking its
-    maximum.
-
-    expected_center: if None, uses image center
-    roi_half: ROI is (2*roi_half) x (2*roi_half)
-    sigma: Gaussian sigma in pixels (2–5 is typical)
-    """
+def estimate_beam_center(frame: np.ndarray, sigma: float = 3.0):
+    """Estimate beam center by Gaussian-blurring a small ROI and taking max."""
     h, w = image.shape
-    cy0, cx0 = expected
+    cy0, cx0 = np.unravel_index(np.argmax(frame), frame.shape)
 
-    y0 = max(0, cy0 - roi_half)
-    y1 = min(h, cy0 + roi_half)
-    x0 = max(0, cx0 - roi_half)
-    x1 = min(w, cx0 + roi_half)
+    y0 = max(0, cy0 - h // 8)
+    y1 = min(h - 1, cy0 + h // 8)
+    x0 = max(0, cx0 - w // 8)
+    x1 = min(w - 1, cx0 + w // 8)
 
     roi = image[y0:y1, x0:x1].astype(np.float32)
     roi_blur = ndi.gaussian_filter(roi, sigma=sigma, mode='nearest')
@@ -235,16 +207,14 @@ def make_cross_mask():
 if __name__ == '__main__':
     from PIL import Image
 
-    for i in range(0, 5):
+    for i in range(0, 80):
         path = rf'C:\Users\tchon\x\Instamatic_RATS_cRED_benchmark\instamatic_19\tiff\000{i:02d}.tiff'
-        path = rf'C:\Users\tchon\x\granat\experiment_2\tiff\000{i:02d}.tiff'
         tiff = Image.open(path)
         image = np.array(tiff)
 
-        for h in [10, 20]:
-            t0 = time.perf_counter()
-            results = detect_diffraction_fast(image, n_radial_bins=h, mask=make_cross_mask())
-            t1 = time.perf_counter()
-            print(f'TIME TAKEN: {t1 - t0}')
-            print(len(results['peaks']))
-            plot_diffraction_debug(image, results)
+        t0 = time.perf_counter()
+        results = ring_threshold_detection(image, mask=make_cross_mask())
+        t1 = time.perf_counter()
+        print(f'TIME TAKEN: {t1 - t0}')
+        print(len(results['peaks']))
+        plot_diffraction_debug(image, results)
