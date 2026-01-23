@@ -8,7 +8,7 @@ from instamatic.calibrate import CalibMovieDelays
 from instamatic.calibrate.calibrate_stage_translation import CalibStageTranslationX
 from instamatic.experiments.experiment_base import ExperimentBase
 from instamatic.experiments.fast_adt.experiment import FastADTMissingCalibError
-from instamatic.grid.window import RectangularGridWindow
+from instamatic.grid.window import RectangularWindow
 
 
 class Experiment(ExperimentBase):
@@ -63,7 +63,7 @@ class Experiment(ExperimentBase):
         self.determine_translation_speed()
 
         # plan the scanning of current grid window
-        win = RectangularGridWindow.from_sweeping(order=3)
+        win = RectangularWindow.from_sweeping(order=3)
         y = np.min(win.corners[:, 1]) + (0.5 * self.xy_resolution)
         scans: dict[int, tuple[float, float]] = {}
         for i, x in enumerate(win.x_intersections(y)):

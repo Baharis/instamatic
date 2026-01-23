@@ -3,8 +3,12 @@ from __future__ import annotations
 import logging
 import string
 from collections import UserDict
+from collections.abc import MutableMapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator, TypeVar
+
+T1 = TypeVar('T1')
+T2 = TypeVar('T2')
 
 
 class NoOverwriteDict(UserDict):
@@ -53,3 +57,28 @@ class PartialFormatter(string.Formatter):
 
 
 partial_formatter = PartialFormatter()
+
+
+class VersionedDict(MutableMapping[T1, T2]):
+    """A dict whose version changes with every mutation; useful for caching."""
+
+    def __init__(self) -> None:
+        self._d: dict[T1, T2] = {}
+        self.version = 0
+
+    def __getitem__(self, k: T1) -> T2:
+        return self._d[k]
+
+    def __iter__(self) -> Iterator[T1]:
+        return iter(self._d)
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __setitem__(self, k, v) -> None:
+        self._d[k] = v
+        self.version += 1
+
+    def __delitem__(self, k) -> None:
+        del self._d[k]
+        self.version += 1

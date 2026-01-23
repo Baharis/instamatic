@@ -23,11 +23,13 @@ X = np.array([1, 0], dtype=float)
 Y = np.array([0, 1], dtype=float)
 
 
-class ConvexPolygonGridWindow(ABC):
+class ConvexPolygonWindow(ABC):
     """Describes one convex polygon window without assumptions about grid."""
 
-    center: np.ndarray = ...
-    corners: Sequence[np.ndarray] = ...
+    center: np.ndarray = ...  # 2-element array describing the center of window
+    w_axis: np.ndarray = ...  # from center towards the center of side in X dir
+    h_axis: np.ndarray = ...  # from center towards the center of side in Y dir
+    corners: Sequence[np.ndarray] = ...  # a Nx2 list of center coordinates
 
     @classmethod
     def from_sweeping(cls, order: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = 3) -> Self:
@@ -125,7 +127,7 @@ class ConvexPolygonGridWindow(ABC):
         return min(intersection_xs), max(intersection_xs)
 
 
-class RectangularGridWindow(ConvexPolygonGridWindow):
+class RectangularWindow(ConvexPolygonWindow):
     """Describes one rectangular window without assumptions about the grid.
 
     Geometry is described using five immutable float scalars (nm / radian):
@@ -184,3 +186,20 @@ class RectangularGridWindow(ConvexPolygonGridWindow):
         d3 = np.abs(np.dot(xys - (center + h_axis), h_axis_n))
         d4 = np.abs(np.dot(xys - (center - h_axis), h_axis_n))
         return np.sum(np.min([d1, d2, d3, d4], axis=0) ** 2)
+
+    def translated(self, delta: np.ndarray) -> Self:
+        """Return a new window translated by (dx, dy) in nm."""
+        d = np.asarray(delta, dtype=float).reshape(
+            2,
+        )
+        return type(self)(
+            float(self.center_x + d[0]),
+            float(self.center_y + d[1]),
+            float(self.width),
+            float(self.height),
+            float(self.theta),
+        )
+
+
+class HexagonalWindow(ConvexPolygonWindow):
+    """TODO: To be completed later to support a hexagonal lattice"""

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from instamatic.grid.window import ConvexPolygonGridWindow
+from instamatic.grid.window import ConvexPolygonWindow
 
 
 class SPEDState:
@@ -11,7 +11,7 @@ class SPEDState:
 
     def __init__(self) -> None:
         self.grids: list[int] = []
-        self.windows: dict[tuple[int, int], ConvexPolygonGridWindow] = {}
+        self.windows: dict[tuple[int, int], ConvexPolygonWindow] = {}
         self.scans: pd.DataFrame = pd.DataFrame()
         self.steps: pd.DataFrame = pd.DataFrame()
         self.init_dataframes()

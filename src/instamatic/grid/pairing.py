@@ -23,6 +23,15 @@ https://www.redblobgames.com/grids/hexagons/ and https://doi.org/10.1117/1.JEI.2
 from __future__ import annotations
 
 import math
+from typing import Protocol
+
+
+class PairingFunction(Protocol):
+    def __call__(self, i: int, j: int, /) -> int: ...
+
+
+class PairingInverse(Protocol):
+    def __call__(self, n: int, /) -> tuple[int, int]: ...
 
 
 def ulam2ij(u: int) -> tuple[int, int]:
