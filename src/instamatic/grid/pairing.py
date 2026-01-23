@@ -196,7 +196,7 @@ if __name__ == '__main__':  # tests
             u, v = ij_grid[r, c]
             spiral_grid[r, c] = uv2spiral(u, v)
 
-    # pretty-print ulam grid
+    # pretty-print spiral indices
     print('Spiral index grid:')
     for i, row in enumerate(spiral_grid):
         print('  ' * i + ' '.join(f'{n:3d}' for n in row))
