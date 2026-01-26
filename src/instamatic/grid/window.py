@@ -31,6 +31,9 @@ class ConvexPolygonWindow(ABC):
     h_axis: np.ndarray = ...  # from center towards the center of side in Y dir
     corners: Sequence[np.ndarray] = ...  # a Nx2 list of center coordinates
 
+    @abstractmethod
+    def __repr__(self) -> str: ...
+
     @classmethod
     def from_sweeping(cls, order: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = 3) -> Self:
         """Return new using `EdgeSweeper`s scanning around current position."""
@@ -155,6 +158,10 @@ class RectangularWindow(ConvexPolygonWindow):
         self.h_axis = ha = 0.5 * h * np.array([-np.sin(t), np.cos(t)], dtype=float)
         self.corners = np.vstack([c + wa + ha, c + wa - ha, c - wa - ha, c - wa + ha])
 
+    def __repr__(self) -> str:
+        args = [self.center_x, self.center_y, self.width, self.height, self.theta]
+        return self.__class__.__name__ + '(x={}, y={}, w={}, h={}, t={})'.format(*args)
+
     @classmethod
     def from_edge_xys(cls, edge_xys: np.ndarray) -> Self:
         """Return new by fitting the edge to a Nx2 list of edge positions."""
@@ -230,6 +237,10 @@ class HexagonalWindow(ConvexPolygonWindow):
         for angle in np.linspace(t + np.pi / 6, t + 13 * np.pi / 6, num=6, endpoint=False):
             corners.append(r_circum * np.array([np.cos(angle), np.sin(angle)], dtype=float))
         self.corners = c + np.vstack(corners)
+
+    def __repr__(self) -> str:
+        args = [self.center_x, self.center_y, self.width, self.theta]
+        return self.__class__.__name__ + '(x={}, y={}, w={}, t={})'.format(*args)
 
     @classmethod
     def from_edge_xys(cls, edge_xys: np.ndarray) -> Self:

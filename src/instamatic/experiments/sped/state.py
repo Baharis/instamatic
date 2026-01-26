@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import ast
+import importlib
+from typing import Callable, Optional, Sequence, Union
+
 import numpy as np
 import pandas as pd
 
+from instamatic.experiments.sped.journal import Journal, journaled
 from instamatic.grid.window import ConvexPolygonWindow
+
+WindowFactory: Callable[[float, float, float, ...], type[ConvexPolygonWindow]]
 
 
 class SPEDState:
     """Stores the current state of the SPED experiment in history dataframe."""
 
-    def __init__(self) -> None:
+    def __init__(self, journal: Journal) -> None:
+        self.journal: Journal = journal
         self.windows: dict[int, ConvexPolygonWindow] = {}
         self.scans: pd.DataFrame = pd.DataFrame()
         self.steps: pd.DataFrame = pd.DataFrame()
-        self.init_dataframes()
+        self._init_dataframes()
 
-    def init_dataframes(self) -> None:
+    def _init_dataframes(self) -> None:
         """Create a new empty history with required index and columns."""
         self.scans = pd.DataFrame(
             {
@@ -39,9 +47,31 @@ class SPEDState:
         )
         self.steps.set_index(['window', 'scan', 'step'], inplace=True)
 
-    def add_window(self, idx: int, window: ConvexPolygonWindow) -> None:
+    @classmethod
+    def from_journal(cls, journal: Journal) -> SPEDState:
+        state = cls(journal=journal)
+        with journal.writing_off():
+            for event in journal.events():
+                method = getattr(state, event['method'])
+                kwargs = event.get('kwargs', {})
+                method(**kwargs)
+        return state
+
+    @journaled
+    def add_window(self, idx: int, window: Union[ConvexPolygonWindow, str]) -> None:
+        """For journaling purposes, can be added via instance or __repr__."""
+        if isinstance(window, str):
+            body = ast.parse(window, mode='eval').body
+            assert isinstance(body, ast.Call), f'Failed to eval "{window}"'
+            assert isinstance(body.func, ast.Name), f'Failed to eval "{window}"'
+            window_class_name = body.func.id
+            kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in body.keywords}
+            window_module = importlib.import_module('instamatic.grid.window')
+            window_class = getattr(window_module, window_class_name)
+            window = window_class(**kwargs)
         self.windows[idx] = window
 
+    @journaled
     def add_scan(
         self,
         window: int,
@@ -68,12 +98,13 @@ class SPEDState:
         new_steps.set_index(['window', 'scan', 'step'], inplace=True)
         self.steps = pd.concat([self.steps, new_steps], copy=False)
 
+    @journaled
     def fill_scan(
         self,
         window: int,
         scan: int,
-        success: np.ndarray,
-        n_peaks: np.ndarray,
+        success: Union[np.ndarray, Sequence[Union[bool, None]]],
+        n_peaks: Union[np.ndarray, Sequence[int]],
     ) -> None:
         """Fill a previously-added scan with success/n_peaks in one update."""
         idx = pd.IndexSlice[window, scan, :]
