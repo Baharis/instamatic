@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import copy
-from typing import Annotated, Generic, Tuple, TypeVar, Union, cast
+from typing import Annotated, Generic, TypeVar, Union, cast
 
-import numpy as np
-from fontTools.misc.cython import returns
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -15,7 +12,6 @@ from instamatic._collections import VersionedDict
 from instamatic._typing import float_nm, int_nm
 from instamatic.grid.pairing import *
 from instamatic.grid.window import ConvexPolygonWindow, HexagonalWindow, RectangularWindow
-from instamatic.utils.iterating import pairwise
 
 DualIndex = tuple[int, int]
 UlamIndex = Annotated[int, 'positive']
