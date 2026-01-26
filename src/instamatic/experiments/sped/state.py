@@ -10,8 +10,7 @@ class SPEDState:
     """Stores the current state of the SPED experiment in history dataframe."""
 
     def __init__(self) -> None:
-        self.grids: list[int] = []
-        self.windows: dict[tuple[int, int], ConvexPolygonWindow] = {}
+        self.windows: dict[int, ConvexPolygonWindow] = {}
         self.scans: pd.DataFrame = pd.DataFrame()
         self.steps: pd.DataFrame = pd.DataFrame()
         self.init_dataframes()
@@ -20,7 +19,6 @@ class SPEDState:
         """Create a new empty history with required index and columns."""
         self.scans = pd.DataFrame(
             {
-                'grid': pd.Series(dtype=np.uint8),
                 'window': pd.Series(dtype=np.uint16),
                 'scan': pd.Series(dtype=np.uint16),
                 'x0': pd.Series(dtype=np.int32),
@@ -29,10 +27,9 @@ class SPEDState:
                 'span': pd.Series(dtype=np.uint32),
             }
         )
-        self.scans.set_index(['grid', 'window', 'scan'], inplace=True)
+        self.scans.set_index(['window', 'scan'], inplace=True)
         self.steps = pd.DataFrame(
             {
-                'grid': pd.Series(dtype=np.uint8),
                 'window': pd.Series(dtype=np.uint16),
                 'scan': pd.Series(dtype=np.uint16),
                 'step': pd.Series(dtype=np.uint16),
@@ -40,13 +37,27 @@ class SPEDState:
                 'n_peaks': pd.Series(dtype=np.uint16),
             }
         )
-        self.steps.set_index(['grid', 'window', 'scan', 'step'], inplace=True)
+        self.steps.set_index(['window', 'scan', 'step'], inplace=True)
 
-    def add_scan(self, grid: int, window: int, scan: int, n_frames: int) -> None:
-        """Pre-allocate scan space in the history dataframe for performance."""
-        new = pd.DataFrame(
+    def add_window(self, idx: int, window: ConvexPolygonWindow) -> None:
+        self.windows[idx] = window
+
+    def add_scan(
+        self,
+        window: int,
+        scan: int,
+        x0: int,
+        y0: int,
+        direction: str,
+        span: int,
+        n_frames: int,
+    ) -> None:
+        """Append to scans and pre-allocate space in the steps dataframe."""
+        new_scan = {'x0': x0, 'y0': y0, 'direction': direction, 'span': span}
+        self.scans.loc[window, scan] = new_scan
+
+        new_steps = pd.DataFrame(
             {
-                'grid': np.full(n_frames, grid, dtype=np.uint8),
                 'window': np.full(n_frames, window, dtype=np.uint16),
                 'scan': np.full(n_frames, scan, dtype=np.uint16),
                 'step': np.arange(n_frames, dtype=np.uint16),
@@ -54,10 +65,22 @@ class SPEDState:
                 'n_peaks': np.zeros(n_frames, dtype=np.uint16),
             }
         )
-        new.set_index(['grid', 'window', 'scan', 'step'], inplace=True)
-        self.steps = pd.concat([self.steps, new], copy=False)
+        new_steps.set_index(['window', 'scan', 'step'], inplace=True)
+        self.steps = pd.concat([self.steps, new_steps], copy=False)
 
-    def add_step(self, idx, *, success: bool, n_peaks: int) -> None:
-        """Add a single result line to the history dataframe."""
-        self.steps.at[idx, 'success'] = bool(success)
-        self.steps.at[idx, 'n_peaks'] = int(n_peaks)
+    def fill_scan(
+        self,
+        window: int,
+        scan: int,
+        success: np.ndarray,
+        n_peaks: np.ndarray,
+    ) -> None:
+        """Fill a previously-added scan with success/n_peaks in one update."""
+        idx = pd.IndexSlice[window, scan, :]
+
+        n_rows = self.steps.loc[idx].shape[0]
+        if len(success) != n_rows or len(n_peaks) != n_rows:
+            raise ValueError(f'Expected {n_rows} steps, got {len(success)=}, {len(n_peaks)=}')
+
+        self.steps.loc[idx, 'success'] = pd.array(success, dtype='boolean')
+        self.steps.loc[idx, 'n_peaks'] = np.asarray(n_peaks, dtype=np.uint16)
