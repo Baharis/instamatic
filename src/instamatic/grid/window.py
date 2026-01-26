@@ -161,7 +161,7 @@ class RectangularWindow(ConvexPolygonWindow):
         xys_com = np.mean(edge_xys, axis=0)
         xys_deltas = edge_xys - xys_com
         xys_cov = np.cov(xys_deltas.T)
-        eigenvalues, eigenvectors = np.linalg.eigh(xys_cov)
+        _, eigenvectors = np.linalg.eigh(xys_cov)
         eigenvector_proj = xys_deltas @ eigenvectors
         width0 = eigenvector_proj[:, 1].max() - eigenvector_proj[:, 1].min()
         height0 = eigenvector_proj[:, 0].max() - eigenvector_proj[:, 0].min()
@@ -202,4 +202,97 @@ class RectangularWindow(ConvexPolygonWindow):
 
 
 class HexagonalWindow(ConvexPolygonWindow):
-    """TODO: To be completed later to support a hexagonal lattice"""
+    """Describes a regular hexagonal window without assumptions about the grid.
+
+    Geometry is described using four immutable float scalars (nm / radian):
+
+    - center_x: coordinate of the window center on the X axis;
+    - center_y: coordinate of the window center on the Y axis;
+    - width: distance between two opposite sides ("flat-to-flat");
+    - theta: signed angle from world X axis towards the +w_axis direction.
+    """
+
+    ROT60MAT = np.array([[1, -np.sqrt(3)], [np.sqrt(3), 1]], dtype=float) / 2
+
+    def __init__(self, x: float, y: float, w: float, t: float):
+        t = (t + (np.pi / 6)) % (np.pi / 3) - (np.pi / 6)  # cast to [-pi/6, pi/6]
+        self.center_x: float_nm = x
+        self.center_y: float_nm = y
+        self.width = w = abs(w)
+        self.theta: float = t
+
+        self.center = c = np.array([x, y], dtype=float)
+        self.w_axis = wa = 0.5 * w * np.array([np.cos(t), np.sin(t)], dtype=float)
+        self.h_axis = self.ROT60MAT @ (self.ROT60MAT @ wa)
+
+        r_circum = w / np.sqrt(3.0)
+        corners = []
+        for angle in np.linspace(t + np.pi / 6, t + 13 * np.pi / 6, num=6, endpoint=False):
+            corners.append(r_circum * np.array([np.cos(angle), np.sin(angle)], dtype=float))
+        self.corners = c + np.vstack(corners)
+
+    @classmethod
+    def from_edge_xys(cls, edge_xys: np.ndarray) -> Self:
+        """Return new by fitting a regular hexagon to a Nx2 list of edge
+        positions.
+
+        Uses a simple initial guess from PCA and refines with Powell.
+        """
+        edge_xys = np.asarray(edge_xys, dtype=float)
+        xys_com = np.mean(edge_xys, axis=0)
+
+        # PCA for an initial orientation guess
+        xys_deltas = edge_xys - xys_com
+        xys_cov = np.cov(xys_deltas.T)
+        _, eigenvectors = np.linalg.eigh(xys_cov)
+
+        # Use principal axis as a crude guess for a vertex direction; convert to theta for w_axis
+        theta0 = float(np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1]) - np.pi / 6.0)
+
+        # Guess width from projected spread onto w_axis direction (apothem approx)
+        w_hat0 = np.array([np.cos(theta0), np.sin(theta0)], dtype=float)
+        proj = xys_deltas @ w_hat0
+        # apothem ~ median absolute projection to a side midpoint direction
+        a0 = float(np.median(np.abs(proj)))
+        width0 = max(1.0, 2.0 * a0)
+
+        guess = np.array([xys_com[0], xys_com[1], width0, theta0], dtype=float)
+        res = minimize(cls.edge_d2_sum, guess, args=(edge_xys,), method='Powell')
+        new = cls(*res.x)
+        new._edge_xys = edge_xys
+        return new
+
+    @staticmethod
+    def edge_d2_sum(geom: tuple[float, float, float, float], xys: np.ndarray) -> float:
+        """Objective: squared distance of points to nearest hexagon side (regular)."""
+        cx, cy, width, theta = geom
+        width = abs(width)
+        if width <= 0:
+            return np.inf
+
+        c = np.array([cx, cy], dtype=float)
+        pts = np.asarray(xys, dtype=float) - c
+
+        # Unit normals to the 6 sides (pointing outward).
+        # If w_axis points to a side midpoint at angle theta, then that side's outward normal is along theta.
+        # Other side normals are spaced by 60 degrees.
+        angles = theta + np.arange(6) * (np.pi / 3.0)
+        normals = np.stack([np.cos(angles), np.sin(angles)], axis=1)  # (6,2)
+
+        # Signed distances to each supporting line: (n·p - a)
+        # Point is inside if all <= 0. We want distance to boundary: max(n·p - a) clipped at 0.
+        signed = pts @ normals.T - 0.5 * width  # (N,6)
+        outside = np.maximum(signed.max(axis=1), 0.0)  # (N,)
+        return float(np.sum(outside**2))
+
+    def translated(self, delta: np.ndarray) -> Self:
+        """Return a new window translated by (dx, dy) in nm."""
+        d = np.asarray(delta, dtype=float).reshape(
+            2,
+        )
+        return type(self)(
+            float(self.center_x + d[0]),
+            float(self.center_y + d[1]),
+            float(self.width),
+            float(self.theta),
+        )

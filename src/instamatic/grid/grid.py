@@ -4,6 +4,7 @@ import copy
 from typing import Annotated, Generic, Tuple, TypeVar, Union, cast
 
 import numpy as np
+from fontTools.misc.cython import returns
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -153,7 +154,7 @@ class ConvexPolygonGrid(Generic[WindowType]):
     def predict_window(self, idx: WindowIndex) -> WindowType:
         """Predict the window of index idx given the rest of the grid."""
         w0_delta = self.predict_center(idx) - self.windows[0].center
-        return cast(WindowType, w0.translated(w0_delta))
+        return cast(WindowType, self.windows[0].translated(w0_delta))
 
 
 class HexagonalGrid(ConvexPolygonGrid[HexagonalWindow]):
@@ -170,11 +171,22 @@ class RectangularGrid(ConvexPolygonGrid[RectangularWindow]):
 
 if __name__ == '__main__':
     g = RectangularGrid()
-    w0 = RectangularWindow(0, 0, 50_000, 50_000, np.deg2rad(0))
+    w0 = RectangularWindow(0, 0, 50_000, 50_000, np.deg2rad(10))
     g.windows[0] = w0
-    for i in range(20):
+    for i in range(200):
         p = g.predict_window(i)
         if np.linalg.norm(p.center - w0.center) < 400_000:
             g.windows[i] = p
 
     g.plot()
+
+    h = HexagonalGrid()
+    v0 = HexagonalWindow(0, 0, 50_000, np.deg2rad(10))
+    h.windows[0] = v0
+
+    for i in range(200):
+        q = h.predict_window(i)
+        if np.linalg.norm(q.center - v0.center) < 400_000:
+            h.windows[i] = q
+
+    h.plot()
