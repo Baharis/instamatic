@@ -18,15 +18,14 @@ class ProgressTable(ttk.Frame):
 
     COLUMNS = 'Geometry hits refls steps hits/step refls/step'.split()
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent: tk.Misc, **kwargs) -> None:
+        super().__init__(parent, **kwargs)
         self.tree = None
         self._build_tree()
         self._scan_geom: list[Union[int, str]] = []
         self._window_totals: tuple[int, int, int] = (0, 0, 0)  # hits, refls, steps
 
     def _build_tree(self) -> None:
-        self.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.tree = ttk.Treeview(self, columns=self.COLUMNS, show='tree headings')
 
         for column in self.COLUMNS:
@@ -162,7 +161,8 @@ def edits_progress(method: Callable) -> Callable:
 if __name__ == '__main__':
     root = tk.Tk()
     root.title('Test progress listbox')
-    listbox = ProgressTable()
+    listbox = ProgressTable(root)
+    listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
     listbox.add_window(0, 'Some geometry')
     listbox.add_scan(0, 0, 100, 200, '+x', 1000, 50)
     listbox.fill_scan(0, 0, success=[True, False, True, None, True], n_peaks=[12, 3, 8, 0, 21])

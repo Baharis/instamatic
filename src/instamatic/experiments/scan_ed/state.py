@@ -7,8 +7,8 @@ from typing import Callable, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from instamatic.experiments.sped.journal import Journal, edits_journal
-from instamatic.experiments.sped.progress import ProgressTable, edits_progress
+from instamatic.experiments.scan_ed.journal import Journal, edits_journal
+from instamatic.experiments.scan_ed.progress import ProgressTable, edits_progress
 from instamatic.grid.window import ConvexPolygonWindow
 
 WindowFactory: Callable[[float, float, float, ...], type[ConvexPolygonWindow]]
