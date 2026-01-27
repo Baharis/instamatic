@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import tkinter as tk
 import tkinter.ttk as ttk
-from typing import Protocol, Sequence, Union
+from functools import wraps
+from typing import Callable, Protocol, Sequence, Union
 
 import numpy as np
 
@@ -11,7 +13,7 @@ class GridWindowProtocol(Protocol):
     def __repr__(self) -> str: ...
 
 
-class ProgressListbox(ttk.Frame):
+class ProgressTable(ttk.Frame):
     """Use a ttk.TreeView to display the progress of scanning experiment."""
 
     COLUMNS = 'Geometry hits refls steps hits/step refls/step'.split()
@@ -21,7 +23,6 @@ class ProgressListbox(ttk.Frame):
         self.tree = None
         self._build_tree()
         self._scan_geom: list[Union[int, str]] = []
-        self._scan_totals: tuple[int, int, int] = (0, 0, 0)  # hits, refls, steps
         self._window_totals: tuple[int, int, int] = (0, 0, 0)  # hits, refls, steps
 
     def _build_tree(self) -> None:
@@ -90,7 +91,6 @@ class ProgressListbox(ttk.Frame):
         values = (geom, '-', '-', n_frames, '-', '-')
         self.tree.insert(window_iid, tk.END, iid=scan_iid, text=scan_name, values=values)
         self._scan_geom = [x0, y0, direction, span]
-        self._scan_totals: tuple[int, int, int] = (0, 0, 0)
 
     def fill_scan(
         self,
@@ -107,7 +107,7 @@ class ProgressListbox(ttk.Frame):
         step = span / len(success) * (-1 if direction.startswith('-') else 1)
 
         s_hits = sum(bool(s) for s in success)
-        s_refls = sum(int(n) for ok, n in zip(success, n_peaks) if ok is True)
+        s_refls = sum(int(n) for ok, n in zip(success, n_peaks) if ok)
         s_steps = len(success)
         s_hits_per_step = s_hits / s_steps if s_steps else 0.0
         s_refls_per_step = s_refls / s_steps if s_steps else 0.0
@@ -142,10 +142,27 @@ class ProgressListbox(ttk.Frame):
             self.tree.insert(scan_iid, tk.END, iid=step_iid, text=step_name, values=values)
 
 
+def edits_progress(method: Callable) -> Callable:
+    """Method decorator, captures calls to modify object's progress attr."""
+    method_signature = inspect.signature(method)
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        out = method(self, *args, **kwargs)
+        if (progress := getattr(self, 'progress', None)) is not None:
+            bound = method_signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            kwargs = {k: v for k, v in bound.arguments.items() if k != 'self'}
+            getattr(progress, method.__name__)(**kwargs)
+        return out
+
+    return wrapper
+
+
 if __name__ == '__main__':
     root = tk.Tk()
     root.title('Test progress listbox')
-    listbox = ProgressListbox()
+    listbox = ProgressTable()
     listbox.add_window(0, 'Some geometry')
     listbox.add_scan(0, 0, 100, 200, '+x', 1000, 50)
     listbox.fill_scan(0, 0, success=[True, False, True, None, True], n_peaks=[12, 3, 8, 0, 21])

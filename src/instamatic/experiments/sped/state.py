@@ -7,7 +7,8 @@ from typing import Callable, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from instamatic.experiments.sped.journal import Journal, journaled
+from instamatic.experiments.sped.journal import Journal, edits_journal
+from instamatic.experiments.sped.progress import ProgressTable, edits_progress
 from instamatic.grid.window import ConvexPolygonWindow
 
 WindowFactory: Callable[[float, float, float, ...], type[ConvexPolygonWindow]]
@@ -16,8 +17,10 @@ WindowFactory: Callable[[float, float, float, ...], type[ConvexPolygonWindow]]
 class SPEDState:
     """Stores the current state of the SPED experiment in history dataframe."""
 
-    def __init__(self, journal: Journal) -> None:
+    def __init__(self, journal: Journal, progress: Optional[ProgressTable] = None) -> None:
         self.journal: Journal = journal
+        self.progress: ProgressTable = progress
+
         self.windows: dict[int, ConvexPolygonWindow] = {}
         self.scans: pd.DataFrame = pd.DataFrame()
         self.steps: pd.DataFrame = pd.DataFrame()
@@ -47,17 +50,15 @@ class SPEDState:
         )
         self.steps.set_index(['window', 'scan', 'step'], inplace=True)
 
-    @classmethod
-    def from_journal(cls, journal: Journal) -> SPEDState:
-        state = cls(journal=journal)
-        with journal.writing_off():
-            for event in journal.events():
-                method = getattr(state, event['method'])
+    def load_from_journal(self) -> None:
+        with self.journal.writing_off():
+            for event in self.journal.events():
+                method = getattr(self, event['method'])
                 kwargs = event.get('kwargs', {})
                 method(**kwargs)
-        return state
 
-    @journaled
+    @edits_journal
+    @edits_progress
     def add_window(self, idx: int, window: Union[ConvexPolygonWindow, str]) -> None:
         """For journaling purposes, can be added via instance or __repr__."""
         if isinstance(window, str):
@@ -71,7 +72,8 @@ class SPEDState:
             window = window_class(**kwargs)
         self.windows[idx] = window
 
-    @journaled
+    @edits_journal
+    @edits_progress
     def add_scan(
         self,
         window: int,
@@ -98,7 +100,8 @@ class SPEDState:
         new_steps.set_index(['window', 'scan', 'step'], inplace=True)
         self.steps = pd.concat([self.steps, new_steps], copy=False)
 
-    @journaled
+    @edits_journal
+    @edits_progress
     def fill_scan(
         self,
         window: int,

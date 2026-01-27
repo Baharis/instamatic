@@ -73,7 +73,7 @@ def serialize(obj):
     return obj
 
 
-def journaled(method: Callable) -> Callable:
+def edits_journal(method: Callable) -> Callable:
     """Method decorator that logs its calls to object's journal attribute."""
     method_signature = inspect.signature(method)
 
