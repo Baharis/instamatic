@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from functools import wraps
+from pathlib import Path
+from threading import Event as ThreadingEvent
 from tkinter import *
 from tkinter.ttk import *
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from instamatic import controller
+from instamatic._typing import AnyPath
 from instamatic.experiments.scan_ed.progress import ProgressTable
 from instamatic.utils.spinbox import Spinbox
 
@@ -25,7 +27,7 @@ duration = {'from_': 0, 'to': 60, 'increment': 0.1}
 class ExperimentalScanEDVariables:
     """A collection of tkinter Variable instances passed to the experiment."""
 
-    def __init__(self, on_change: Optional[Callable[[], None]] = None) -> None:
+    def __init__(self) -> None:
         self.grid_geometry = StringVar()
         self.scan_geometry = StringVar()
         self.scan_x_step = IntVar(value=500)
@@ -38,34 +40,20 @@ class ExperimentalScanEDVariables:
         self.target_time = IntVar(value=480)
 
         self.target_hits_b = BooleanVar(value=False)
-        self.target_steps_b = BooleanVar(value=False)
         self.target_x_b = BooleanVar(value=False)
         self.target_y_b = BooleanVar(value=False)
         self.target_time_b = BooleanVar(value=False)
 
-        if on_change:
-            self._add_callback(on_change)
+        self.stop_event = ThreadingEvent()
 
-    def _add_callback(self, callback: Callable[[], None]) -> None:
-        """Add a safe trace callback to all `Variable` instances in self."""
-
-        @wraps(callback)
-        def safe_callback(*_):
-            try:
-                callback()
-            except TclError as e:  # Ignore invalid/incomplete GUI edits
-                if 'expected floating-point number' not in str(e):
-                    raise
-            except AttributeError as e:  # Ignore incomplete initialization
-                if 'object has no attribute' not in str(e):
-                    raise
-
-        for name, var in vars(self).items():
-            if isinstance(var, Variable):
-                var.trace_add('write', safe_callback)
-
-    def as_dict(self):
-        return {n: v.get() for n, v in vars(self).items() if isinstance(v, Variable)}
+    def as_dict(self) -> dict[str, Union[float, int, str]]:
+        """Return self as dict, replace values with None if key_b is False."""
+        d = {n: v.get() for n, v in vars(self).items() if isinstance(v, Variable)}
+        for key in d.copy().keys():
+            if (key_b := key + '_b') in d:
+                if d.pop(key_b) is False:
+                    d[key] = None
+        return d
 
 
 class ExperimentalScanED(LabelFrame, ModuleFrameMixin):
@@ -144,38 +132,58 @@ class ExperimentalScanED(LabelFrame, ModuleFrameMixin):
         self.progress = ProgressTable(f)
         self.progress.grid(row=10, columnspan=4, sticky=NSEW, padx=10, pady=10)
 
-        self.start_button = Button(f, text='Start', command=self.start_collection)
-        self.start_button.grid(row=20, column=0, sticky=EW, padx=(10, 0))
+        g = Frame(self)
+        for column in range(3):
+            g.grid_columnconfigure(column, weight=1, uniform='buttons')
 
-        self.restore_button = Button(f, text='Restore', command=self.start_collection)
-        self.restore_button.grid(row=20, column=1, sticky=EW)
+        self.start_button = Button(g, text='Start collection', command=self.start_collection)
+        self.start_button.grid(row=20, column=0, sticky=EW)
 
-        self.stop_button = Button(f, text='Stop', command=self.start_collection)
+        self.load_button = Button(g, text='Load and continue', command=self.load_collection)
+        self.load_button.grid(row=20, column=1, sticky=EW)
+
+        self.stop_button = Button(g, text='Stop collection', command=self.var.stop_event.set)
         self.stop_button.grid(row=20, column=2, sticky=EW)
 
-        self.finalize_button = Button(f, text='Finalize', command=self.start_collection)
-        self.finalize_button.grid(row=20, column=3, sticky=EW, padx=(0, 10))
-
+        g.pack(side='bottom', fill=BOTH, expand=True, padx=10)
         f.pack(side='bottom', fill=BOTH, expand=True, pady=10)
 
     def start_collection(self) -> None:
-        self.q.put(('fast_adt', {'frame': self, **self.var.as_dict()}))
+        kwargs = {'load': True, 'progress': self.progress}
+        self.q.put(('scan_ed', {**kwargs, **self.var.as_dict()}))
+
+    def load_collection(self) -> None:
+        kwargs = {'progress': self.progress}
+        self.q.put(('scan_ed', {**kwargs, **self.var.as_dict()}))
 
 
 def sced_interface_command(controller, **params: Any) -> None:
-    from instamatic.experiments import scan_ed as sped_module
+    from instamatic.experiments.scan_ed.experiment import Experiment
+    from instamatic.experiments.scan_ed.journal import Journal
+    from instamatic.experiments.scan_ed.state import State
 
-    scan_ed_frame: ExperimentalScanED = params['frame']
+    load: bool = params.get('load', False)
+    progress: Optional[ProgressTable] = params.get('progress', None)
     flat_field = controller.module_io.get_flatfield()
-    exp_dir = controller.module_io.get_new_experiment_directory()
-    exp_dir.mkdir(exist_ok=True, parents=True)
 
-    controller.fast_adt = sped_module.Experiment(
+    if load:
+        exp_dir = controller.module_io.get_experiment_directory()
+        journal_path = Path(exp_dir) / 'journal.jsonl'
+        assert journal_path.is_file(), f'No journal file found at {journal_path}'
+        journal = Journal(path=journal_path)
+        state = State(journal=journal, progress=progress)
+        state.load_from_journal()
+    else:
+        exp_dir = controller.module_io.get_new_experiment_directory()
+        exp_dir.mkdir(exist_ok=True, parents=True)
+
+    controller.fast_adt = Experiment(
         ctrl=controller.ctrl,
         path=exp_dir,
         log=controller.log,
         flatfield=flat_field,
-        scan_ed_frame=scan_ed_frame,
+        progress=progress,
+        state=state,
     )
     try:
         controller.fast_adt.start_collection(**params)

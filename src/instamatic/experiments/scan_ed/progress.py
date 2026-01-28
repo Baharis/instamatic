@@ -77,7 +77,7 @@ class ProgressTable(ttk.Frame):
         y0: int,
         direction: str,
         span: int,
-        n_frames: int,
+        step: int,
     ):
         """Add a new child scan line to the tree called Scan #."""
         window_iid = self._window_iid(window)
@@ -87,7 +87,7 @@ class ProgressTable(ttk.Frame):
             geom = f'y: {y0}, x: {x0} -> {x0 + span}'
         else:
             geom = f'x: {x0}, y: {y0} -> {y0 + span}'
-        values = (geom, '-', '-', n_frames, '-', '-')
+        values = (geom, '-', '-', -(-span // step), '-', '-')
         self.tree.insert(window_iid, tk.END, iid=scan_iid, text=scan_name, values=values)
         self._scan_geom = [x0, y0, direction, span]
 

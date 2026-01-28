@@ -119,7 +119,7 @@ class ConvexPolygonWindow(ABC):
         """Return (x_min, x_max) for a horizontal line intersecting at y."""
         intersection_xs: list[float] = []
         for x1, y1, x2, y2 in pairwise(self.corners, closed=True):
-            if y1 == y2:  # work with edge case , close to zero
+            if y1 == y2:  # edge case (degeneracy / double counting)
                 continue
             intersection_fraction = (y - y1) / (y2 - y1)
             if not 0 < intersection_fraction < 1:
@@ -128,6 +128,20 @@ class ConvexPolygonWindow(ABC):
         if len(intersection_xs) < 2:
             return None
         return min(intersection_xs), max(intersection_xs)
+
+    def y_intersections(self, x: float_nm) -> Optional[tuple[float, float]]:
+        """Return (y_min, y_max) for a vertical line intersecting at x."""
+        intersection_ys: list[float] = []
+        for x1, y1, x2, y2 in pairwise(self.corners, closed=True):
+            if x1 == x2:  # edge case (degeneracy / double counting)
+                continue
+            intersection_fraction = (x - x1) / (x2 - x1)
+            if not 0 < intersection_fraction < 1:
+                continue  # does not intersect
+            intersection_ys.append(y1 + (y2 - y1) * intersection_fraction)
+        if len(intersection_ys) < 2:
+            return None
+        return min(intersection_ys), max(intersection_ys)
 
 
 class RectangularWindow(ConvexPolygonWindow):

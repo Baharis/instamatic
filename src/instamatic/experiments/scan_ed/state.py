@@ -14,7 +14,7 @@ from instamatic.grid.window import ConvexPolygonWindow
 WindowFactory: Callable[[float, float, float, ...], type[ConvexPolygonWindow]]
 
 
-class SPEDState:
+class State:
     """Stores the current state of the SPED experiment in history dataframe."""
 
     def __init__(self, journal: Journal, progress: Optional[ProgressTable] = None) -> None:
@@ -82,19 +82,20 @@ class SPEDState:
         y0: int,
         direction: str,
         span: int,
-        n_frames: int,
+        step: int,
     ) -> None:
         """Append to scans and pre-allocate space in the steps dataframe."""
-        new_scan = {'x0': x0, 'y0': y0, 'direction': direction, 'span': span}
+        new_scan = {'x0': x0, 'y0': y0, 'direction': direction, 'span': span, 'step': step}
         self.scans.loc[window, scan] = new_scan
 
+        n_steps = -(-span // step)
         new_steps = pd.DataFrame(
             {
-                'window': np.full(n_frames, window, dtype=np.uint16),
-                'scan': np.full(n_frames, scan, dtype=np.uint16),
-                'step': np.arange(n_frames, dtype=np.uint16),
-                'success': pd.array([pd.NA] * n_frames, dtype='boolean'),
-                'n_peaks': np.zeros(n_frames, dtype=np.uint16),
+                'window': np.full(n_steps, window, dtype=np.uint16),
+                'scan': np.full(n_steps, scan, dtype=np.uint16),
+                'step': np.arange(n_steps, dtype=np.uint16),
+                'success': pd.array([pd.NA] * n_steps, dtype='boolean'),
+                'n_peaks': np.zeros(n_steps, dtype=np.uint16),
             }
         )
         new_steps.set_index(['window', 'scan', 'step'], inplace=True)
