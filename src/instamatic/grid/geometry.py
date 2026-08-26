@@ -7,13 +7,13 @@ from scipy.optimize import least_squares
 
 from instamatic._collections import NoOverwriteDict
 from instamatic._typing import float_nm, int_nm
-from instamatic.grid.pairing import ij2ulam, spiral2uv, ulam2ij, uv2spiral
 from instamatic.grid.window import (
     GridablePolygonWindow,
     HexagonalWindow,
     RectangularWindow,
     SquareWindow,
 )
+from instamatic.utils.pairing import ij2ulam, spiral2uv, ulam2ij, uv2spiral
 
 DualIndex = tuple[int, int]
 SpiralIndex = Annotated[int, 'positive']
