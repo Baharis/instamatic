@@ -13,7 +13,7 @@ from instamatic.grid.window import (
     RectangularWindow,
     SquareWindow,
 )
-from instamatic.utils.pairing import ij2ulam, spiral2uv, ulam2ij, uv2spiral
+from instamatic.utils.pairing import hulam2uv, ij2ulam, ulam2ij, uv2hulam
 
 DualIndex = tuple[int, int]
 SpiralIndex = Annotated[int, 'positive']
@@ -289,8 +289,8 @@ class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
 
 class HexagonalGridGeometry(PeriodicConvexPolygonGridGeometry):
     neighborhood = np.array([(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)], dtype=int)
-    pairing_function: PairingFunction = staticmethod(uv2spiral)
-    pairing_inverse: PairingInverse = staticmethod(spiral2uv)
+    pairing_function: PairingFunction = staticmethod(uv2hulam)
+    pairing_inverse: PairingInverse = staticmethod(hulam2uv)
     window_type: type[WindowType] = HexagonalWindow
 
 
