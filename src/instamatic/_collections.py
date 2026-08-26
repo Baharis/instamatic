@@ -3,12 +3,8 @@ from __future__ import annotations
 import logging
 import string
 from collections import UserDict
-from collections.abc import MutableMapping
 from dataclasses import dataclass
-from typing import Any, Iterator, TypeVar
-
-T1 = TypeVar('T1')
-T2 = TypeVar('T2')
+from typing import Any
 
 
 class NoOverwriteDict(UserDict):
