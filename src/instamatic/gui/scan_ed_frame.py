@@ -15,14 +15,14 @@ from .base_module import BaseModule, ModuleFrameMixin
 
 SCAN_ED_MODE = Literal['start', 'continue', 'reprocess']
 
-pad10 = {'sticky': 'EW', 'padx': 10, 'pady': 1}
+pad10 = {'sticky': 'EW', 'padx': 5, 'pady': 1}
 scan_step = {'from_': 100, 'to': 100_000, 'increment': 100}
 scan_exposure = {'from_': 0.01, 'to': 10, 'increment': 0.01}
 target_hits = {'from_': 0, 'to': 1_000_000, 'increment': 100}
-target_time = {'from_': 0, 'to': 43_200, 'increment': 60}
 target_xy = {'from_': 0, 'to': 1_000_000, 'increment': 1000}
-angle_delta = {'from_': 0, 'to': 30, 'increment': 1}
-radius_range = {'from_': 0, 'to': 1000, 'increment': 1}
+small_ints = {'from_': 0, 'to': 30, 'increment': 1}
+res_range = {'from_': 0, 'to': 1000, 'increment': 1}
+percentile = {'from_': 0, 'to': 100, 'increment': 0.1}
 
 
 class WidgetState(Enum):
@@ -48,16 +48,17 @@ class ExperimentalScanEDVariables:
     def __init__(self) -> None:
         self.grid_geometry = StringVar()
         self.scan_geometry = StringVar()
-        self.scan_x_step = IntVar(value=500)
-        self.scan_y_step = IntVar(value=500)
+        self.regionalization = StringVar()
+        self.scan_x_step = IntVar(value=1000)
+        self.scan_y_step = IntVar(value=1000)
         self.scan_exposure = DoubleVar(value=0.1)
-        self.grid_finder = StringVar()
+        self.max_tilt = DoubleVar(value=0)
 
+        self.grid_finder = StringVar()
         self.target_hits = IntVar(value=1000)
         self.target_x = IntVar(value=500_000)
         self.target_y = IntVar(value=500_000)
-        self.target_time = IntVar(value=480)
-        self.max_alpha = DoubleVar(value=0)
+        self.target_time = IntVar(value=8)
         self.save_all = BooleanVar(value=False)
 
         self.target_hits_b = BooleanVar(value=False)
@@ -65,8 +66,11 @@ class ExperimentalScanEDVariables:
         self.target_y_b = BooleanVar(value=False)
         self.target_time_b = BooleanVar(value=False)
 
-        self.min_peak_count = IntVar(value=10)
         self.min_radius = DoubleVar(value=40)
+        self.threshold_perc = DoubleVar(value=99)
+        self.threshold_mult = DoubleVar(value=2)
+        self.min_peak_count = IntVar(value=10)
+        self.min_peak_sep = IntVar(value=5)
 
         self.stop_event = ThreadingEvent()
 
@@ -85,7 +89,7 @@ class ExperimentalScanED(LabelFrame, ModuleFrameMixin):
     """GUI panel to control Scanning (precession-assisted) ED experiments."""
 
     def __init__(self, parent):
-        text = 'Automatically scan entire grid until any finish condition is met'
+        text = 'Scan entire grid window by window until any finish condition is met'
         super().__init__(parent, text=text)
         self.pack_propagate(False)  # keep the width fixed
         self.parent = parent
@@ -95,92 +99,116 @@ class ExperimentalScanED(LabelFrame, ModuleFrameMixin):
 
         # Top-aligned part of the frame with experiment parameters
         f = Frame(self)
-        for column in range(6):
-            f.grid_columnconfigure(column, weight=1, uniform='buttons')
+        for column in range(5):
+            f.grid_columnconfigure(column, weight=3, uniform='buttons')
+        f.grid_columnconfigure(5, weight=2, uniform='buttons')
         f.grid_rowconfigure(10, weight=1)
 
-        Label(f, text='Grid geometry:').grid(row=3, column=0, **pad10)
+        Label(f, text='Grid geometry:').grid(row=2, column=0, **pad10)
         m = ['hexagonal', 'rectangular', 'square']
-        self.grid_geometry = OptionMenu(f, self.var.grid_geometry, m[1], *m)
-        self.grid_geometry.grid(row=3, column=1, **pad10)
+        self.grid_geometry = OptionMenu(f, self.var.grid_geometry, m[2], *m)
+        self.grid_geometry.grid(row=2, column=1, **pad10)
 
-        Label(f, text='Scan geometry:').grid(row=4, column=0, **pad10)
+        Label(f, text='Scan geometry:').grid(row=3, column=0, **pad10)
         m = ['X-raster', 'X-serpentine', 'Y-raster', 'Y-serpentine']
         self.scan_geometry = OptionMenu(f, self.var.scan_geometry, m[1], *m)
-        self.scan_geometry.grid(row=4, column=1, **pad10)
+        self.scan_geometry.grid(row=3, column=1, **pad10)
 
-        Label(f, text='Scan X step (nm):').grid(row=5, column=0, **pad10)
+        Label(f, text='Windows in scan:').grid(row=4, column=0, **pad10)
+        m = ['1 x 1', '3 x 1', '1 x 3', '3 x 3']
+        self.regionalization = OptionMenu(f, self.var.regionalization, m[0], *m)
+        self.regionalization.grid(row=4, column=1, **pad10)
+
+        Label(f, text='X step (nm):').grid(row=5, column=0, **pad10)
         var = self.var.scan_x_step
         self.scan_x_step = Spinbox(f, textvariable=var, **scan_step)
         self.scan_x_step.grid(row=5, column=1, **pad10)
 
-        Label(f, text='Scan Y step (nm):').grid(row=6, column=0, **pad10)
+        Label(f, text='Y step (nm):').grid(row=6, column=0, **pad10)
         var = self.var.scan_y_step
         self.scan_y_step = Spinbox(f, textvariable=var, **scan_step)
         self.scan_y_step.grid(row=6, column=1, **pad10)
 
-        Label(f, text='Scan exposure (s):').grid(row=7, column=0, **pad10)
+        Label(f, text='Exposure (s):').grid(row=7, column=0, **pad10)
         var = self.var.scan_exposure
         self.scan_exposure = Spinbox(f, textvariable=var, **scan_exposure)
         self.scan_exposure.grid(row=7, column=1, **pad10)
 
-        Label(f, text='Max alpha tilt (deg):').grid(row=8, column=0, **pad10)
-        self.max_alpha = Spinbox(f, textvariable=self.var.max_alpha, **angle_delta)
-        self.max_alpha.grid(row=8, column=1, **pad10)
+        Label(f, text='Max tilt (deg):').grid(row=8, column=0, **pad10)
+        self.max_tilt = Spinbox(f, textvariable=self.var.max_tilt, **small_ints)
+        self.max_tilt.grid(row=8, column=1, **pad10)
 
         # Finish conditions area with tick marks
 
-        Label(f, text='Find new grid windows:').grid(row=3, column=2, **pad10)
+        Label(f, text='Find windows:').grid(row=2, column=2, **pad10)
         m = ['All manually', 'First manually', 'All automatically']
         self.grid_finder = OptionMenu(f, self.var.grid_finder, m[1], *m)
-        self.grid_finder.grid(row=3, column=3, **pad10)
+        self.grid_finder.grid(row=2, column=3, **pad10)
 
-        text = 'Finish experiment once:'
-        Label(f, text=text).grid(row=4, column=2, columnspan=2, **pad10)
+        text = 'Finish experiment once exceeds:'
+        Label(f, text=text).grid(row=3, column=2, columnspan=2, **pad10)
 
-        text = 'Hits exceed:'
+        text = 'Hits:'
         self.target_hits_b = Checkbutton(f, variable=self.var.target_hits_b, text=text)
-        self.target_hits_b.grid(row=5, column=2, **pad10)
+        self.target_hits_b.grid(row=4, column=2, **pad10)
         self.target_hits = Spinbox(f, textvariable=self.var.target_hits, **target_hits)
-        self.target_hits.grid(row=5, column=3, **pad10)
+        self.target_hits.grid(row=4, column=3, **pad10)
 
-        text = '±X exceeds (nm):'
+        text = 'Stage X (nm):'
         self.target_x_b = Checkbutton(f, variable=self.var.target_x_b, text=text)
-        self.target_x_b.grid(row=6, column=2, **pad10)
+        self.target_x_b.grid(row=5, column=2, **pad10)
         self.target_x = Spinbox(f, textvariable=self.var.target_x, **target_xy)
-        self.target_x.grid(row=6, column=3, **pad10)
+        self.target_x.grid(row=5, column=3, **pad10)
 
-        text = '±Y exceeds (nm):'
+        text = 'Stage Y (nm):'
         self.target_y_b = Checkbutton(f, variable=self.var.target_y_b, text=text)
-        self.target_y_b.grid(row=7, column=2, **pad10)
+        self.target_y_b.grid(row=6, column=2, **pad10)
         self.target_y = Spinbox(f, textvariable=self.var.target_y, **target_xy)
-        self.target_y.grid(row=7, column=3, **pad10)
+        self.target_y.grid(row=6, column=3, **pad10)
 
-        text = 'Time exceeds (h):'
+        text = 'Time (h):'
         self.target_time_b = Checkbutton(f, variable=self.var.target_time_b, text=text)
-        self.target_time_b.grid(row=8, column=2, **pad10)
-        self.target_time = Spinbox(f, textvariable=self.var.target_time, **target_time)
-        self.target_time.grid(row=8, column=3, **pad10)
+        self.target_time_b.grid(row=7, column=2, **pad10)
+        self.target_time = Spinbox(f, textvariable=self.var.target_time, **res_range)
+        self.target_time.grid(row=7, column=3, **pad10)
 
-        Label(f, text='Min peak count:').grid(row=3, column=4, **pad10)
-        var = self.var.min_peak_count
-        self.min_peak_count = Spinbox(f, textvariable=var, **angle_delta)
-        self.min_peak_count.grid(row=3, column=5, **pad10)
+        text = 'Save all data for reprocessing'
+        self.save_all = Checkbutton(f, variable=self.var.save_all, text=text)
+        self.save_all.grid(row=8, column=2, columnspan=2, **pad10)
+
+        text = 'Peakfinding parameters:'
+        Label(f, text=text).grid(row=3, column=4, columnspan=2, **pad10)
 
         Label(f, text='Min radius (px):').grid(row=4, column=4, **pad10)
         var = self.var.min_radius
-        self.min_resolution = Spinbox(f, textvariable=var, **radius_range)
-        self.min_resolution.grid(row=4, column=5, **pad10)
+        self.min_radius = Spinbox(f, textvariable=var, **res_range)
+        self.min_radius.grid(row=4, column=5, **pad10)
 
-        text = 'Save all images in ./all:'
-        self.save_all_b = Checkbutton(f, variable=self.var.save_all, text=text)
-        self.save_all_b.grid(row=8, column=4, columnspan=2, **pad10)
+        Label(f, text='Threshold perc:').grid(row=5, column=4, **pad10)
+        var = self.var.threshold_perc
+        self.threshold_perc = Spinbox(f, textvariable=var, **percentile)
+        self.threshold_perc.grid(row=5, column=5, **pad10)
+
+        Label(f, text='Threshold mult:').grid(row=6, column=4, **pad10)
+        var = self.var.threshold_mult
+        self.threshold_mult = Spinbox(f, textvariable=var, **percentile)
+        self.threshold_mult.grid(row=6, column=5, **pad10)
+
+        Label(f, text='Min peak count:').grid(row=7, column=4, **pad10)
+        var = self.var.min_peak_count
+        self.min_peak_count = Spinbox(f, textvariable=var, **small_ints)
+        self.min_peak_count.grid(row=7, column=5, **pad10)
+
+        Label(f, text='Min peak sep:').grid(row=8, column=4, **pad10)
+        var = self.var.min_peak_sep
+        self.min_peak_sep = Spinbox(f, textvariable=var, **small_ints)
+        self.min_peak_sep.grid(row=8, column=5, **pad10)
 
         # Bottom area for progress and experiment flow control buttons
 
         self.progress = ProgressTable(f)
         self.progress.grid(row=10, columnspan=6, sticky=NSEW, padx=10, pady=0)
-        f.pack(side='top', fill=BOTH, expand=True, pady=10)
+        f.pack(side='top', fill=BOTH, expand=True, padx=5, pady=10)
 
         g = Frame(self)
         for column in range(4):

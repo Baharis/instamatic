@@ -39,7 +39,7 @@ class DiffHuntResults:
 def ring_percentile_detection(
     frame: np.ndarray,
     min_radius: int = 40,
-    percentile: float = 99.0,
+    threshold_perc: float = 99.0,
     threshold_mult: float = 2.0,
     min_peak_count: int = 10,
     min_peak_sep: int = 5,
@@ -97,7 +97,7 @@ def ring_percentile_detection(
         backgrounds[b] = bg
 
         # Threshold in "score" units: (percentile - bg) times multiplier, with a small floor.
-        threshold_perc = max(1.0, float(np.percentile(v, percentile) - bg))
+        threshold_perc = max(1.0, float(np.percentile(v, threshold_perc) - bg))
         thresholds[b] = threshold_mult * threshold_perc
 
     # Candidate selection purely in 1D on the locally averaged image
@@ -227,7 +227,7 @@ if __name__ == '__main__':
         r'C:\Users\tchon\x\2026-02-06-SPED_test\experiment_5\tiff\w000000_s000031_0000*.tiff'
     )
     # paths = glob(r'C:\Users\tchon\x\Instamatic_RATS_cRED_benchmark\instamatic_19\tiff\0000*')
-    paths = [r"G:\USERS\instamatic\2026-07-08\experiment_2\all\r000_l000003_s000_000044.tiff"]
+    paths = [r'G:\USERS\instamatic\2026-07-08\experiment_2\all\r000_l000003_s000_000044.tiff']
     for path in paths:
         tiff = Image.open(path)
         image = np.array(tiff)

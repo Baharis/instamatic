@@ -158,7 +158,7 @@ class Experiment(ExperimentBase):
         self.draw_grid_to_file()
 
         # Introduce the logic for grouping windows by regions
-        rs = params.get('region_shape', '1x1')
+        rs = params.get('regionalization', '1 x 1')
         self.regionalization = Regionalization.from_str(grid=self.state.grid, shape=rs)
 
         # MAIN LOOP: define new region and request locating all windows in it
@@ -452,9 +452,8 @@ class Experiment(ExperimentBase):
 
     def tilt_list(self) -> Sequence[float]:
         """Return a list of tilts from - to + params[tilt_range] for scans."""
-        tilt_extent = self.params.get('tilt_extent', 0)
-        tilt_step = self.params.get('tilt_step', 1)
-        tilt_count = np.round(2 * tilt_extent / tilt_step).astype(int) + 1
+        tilt_extent = self.params.get('max_tilt', 0)
+        tilt_count = np.round(2 * tilt_extent / 1).astype(int) + 1
         return np.linspace(-tilt_extent, tilt_extent, num=tilt_count, endpoint=True)
 
     def finalize(self) -> None:
