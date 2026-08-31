@@ -12,11 +12,11 @@ from matplotlib.patches import Polygon
 from matplotlib.ticker import FuncFormatter
 
 from instamatic._typing import float_nm
-from instamatic.grid.geometry import PeriodicConvexPolygonGridGeometry
+from instamatic.grid.grid import PeriodicConvexPolygonGrid
 
 
 def plot(
-    geometry: PeriodicConvexPolygonGridGeometry,
+    geometry: PeriodicConvexPolygonGrid,
     *,
     intercepts: Optional[dict[int, np.ndarray]] = None,
     limit_x: Optional[float_nm] = None,
@@ -161,13 +161,13 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import numpy as np
 
-    from instamatic.grid.geometry import *
+    from instamatic.grid.grid import *
 
     common = {'x': 0, 'y': 0, 't': 0}
-    g1 = HexagonalGridGeometry(w=50_000, **common)
-    g2 = RectangularGridGeometry(w=40_000, h=60_000, **common)
-    g3 = RectangularGridGeometry(w=40_000, h=200_000, **common)
-    g4 = SquareGridGeometry(w=50_000, **common)
+    g1 = HexagonalGrid(w=50_000, **common)
+    g2 = RectangularGrid(w=40_000, h=60_000, **common)
+    g3 = RectangularGrid(w=40_000, h=200_000, **common)
+    g4 = SquareGrid(w=50_000, **common)
 
     fig, axs = plt.subplots(2, 2)
     fig.tight_layout()

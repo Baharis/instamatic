@@ -54,7 +54,7 @@ class ExperimentalScanEDVariables:
         self.scan_exposure = DoubleVar(value=0.1)
         self.max_tilt = DoubleVar(value=0)
 
-        self.grid_finder = StringVar()
+        self.grid_finding = StringVar()
         self.target_hits = IntVar(value=1000)
         self.target_x = IntVar(value=500_000)
         self.target_y = IntVar(value=500_000)
@@ -142,7 +142,7 @@ class ExperimentalScanED(LabelFrame, ModuleFrameMixin):
 
         Label(f, text='Find windows:').grid(row=2, column=2, **pad10)
         m = ['All manually', 'First manually', 'All automatically']
-        self.grid_finder = OptionMenu(f, self.var.grid_finder, m[1], *m)
+        self.grid_finder = OptionMenu(f, self.var.grid_finding, m[1], *m)
         self.grid_finder.grid(row=2, column=3, **pad10)
 
         text = 'Finish experiment once exceeds:'
@@ -278,7 +278,7 @@ def sced_interface_command(controller, **params: Any) -> None:
             callback()
 
     # get the videostreaming frame only if needed for manual window determination
-    if params.get('grid_finder') == 'All automatically':
+    if params.get('grid_finding') == 'All automatically':
         vsf = None
     else:
         vsf = controller.app.get_module('stream')

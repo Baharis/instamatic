@@ -8,7 +8,7 @@ import numpy as np
 import yaml
 
 from instamatic._typing import AnyPath, float_nm, int_nm
-from instamatic.grid.geometry import GRID_REGISTRY, PeriodicConvexPolygonGridGeometry
+from instamatic.grid.grid import GRID_REGISTRY, PeriodicConvexPolygonGrid
 from instamatic.grid.sweeping import star_sweep
 from instamatic.gui.click_dispatcher import ClickListener, MouseButton
 
@@ -19,7 +19,7 @@ class GridFinder:
     """Base strategy for determining and updating grid geometry.
     Can be stored in a yaml file in the following format:
 
-    window_type: square
+    grid_type: square
     geometry:
         x: 11.111
         y: 22.222
@@ -39,7 +39,7 @@ class GridFinder:
 
     def __init__(
         self,
-        grid: Optional[PeriodicConvexPolygonGridGeometry] = None,
+        grid: Optional[PeriodicConvexPolygonGrid] = None,
         intercepts: Optional[Intercepts] = None,
     ) -> None:
         self.grid = grid or GRID_REGISTRY['square'](0, 0, 0, 50_000, 50_000)
@@ -49,14 +49,14 @@ class GridFinder:
     @classmethod
     def from_yaml(cls, yaml_path: AnyPath) -> GridFinder:
         with open(Path(yaml_path), 'r') as f:
-            data = yaml.load(f, Loader=yaml.FullLoader)
-        grid = GRID_REGISTRY[data['window_type']](**data['geometry'])
+            data = yaml.safe_load(f)
+        grid = GRID_REGISTRY[data['grid_type']](**data['geometry'])
         return cls(grid, data.get('intercepts', {}))
 
     def to_yaml(self, yaml_path: AnyPath) -> None:
-        window_type = self.GRID_REGISTRY_INV[self.grid.window_type]
+        grid_type_name = self.GRID_REGISTRY_INV[type(self.grid)]
         data = {
-            'window_type': window_type,
+            'grid_type': grid_type_name,
             'geometry': self.grid.to_params(),
             'intercepts': {k: v.tolist() for k, v in self.intercepts.items()},
         }
@@ -68,7 +68,7 @@ class GridFinder:
         if window_idx in self.intercepts:
             self.intercepts[window_idx] = np.vstack([self.intercepts[window_idx], [x, y]])
         else:
-            self.intercepts[window_idx] = np.array([x, y], dtype=float)
+            self.intercepts[window_idx] = np.array([[x, y]], dtype=float)
         if self.path is not None:
             self.to_yaml(self.path)
 
@@ -76,11 +76,11 @@ class GridFinder:
         """Fit all intercepts with given window id to a new window."""
         xy = self.intercepts[window_idx]
         if 0 in self.intercepts:
-            new_center = (np.max(xy, axis=0) - np.min(xy, axis=0)) / 2
+            new_center = (np.max(xy, axis=0) + np.min(xy, axis=0)) / 2
             new_window_idx = self.grid.nearest_index(*new_center)
         else:
             new_window_idx = 0
-            self.grid.guess(xy)
+            self.grid = type(self.grid).guess({0: xy})
         new_intercepts = self.intercepts[window_idx]
         del self.intercepts[window_idx]
         self.intercepts[new_window_idx] = new_intercepts

@@ -8,7 +8,7 @@ from typing import Iterator, Self, Union
 
 import numpy as np
 
-from instamatic.grid.geometry import PeriodicConvexPolygonGridGeometry as GridGeometry
+from instamatic.grid.grid import PeriodicConvexPolygonGrid as GridGeometry
 
 
 class Regionalization:

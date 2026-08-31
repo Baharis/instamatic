@@ -8,7 +8,7 @@ from scipy.optimize import curve_fit
 from scipy.special import expit
 
 from instamatic._typing import float_nm
-from instamatic.grid.geometry import WindowType
+from instamatic.grid.grid import WindowType
 
 
 class ScanProfile:

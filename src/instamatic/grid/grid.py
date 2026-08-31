@@ -6,7 +6,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from instamatic._collections import NoOverwriteDict
-from instamatic._typing import float_nm, int_nm
+from instamatic._typing import float_nm
 from instamatic.grid.window import (
     GridablePolygonWindow,
     HexagonalWindow,
@@ -43,7 +43,7 @@ WindowGeometryTuple = tuple[float_nm, float_nm, float, float_nm, Optional[float_
 WindowShapeTuple = tuple[float, float_nm, Optional[float_nm]]
 
 
-class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
+class PeriodicConvexPolygonGrid(Generic[WindowType]):
     """A ConvexPolygonGrid with identical windows and on a 2D ab-lattice.
 
     The conventional, most-expected lattice kind for ED experiments.
@@ -167,7 +167,7 @@ class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
             if self.window(idx=idx).intersects_limits(x, y):
                 idx_in_limits.append(idx)
                 for nb in np.array(self.pairing_inverse(idx)) + self.neighborhood:
-                    nb_idx = self.pairing_function(nb[0], nb[1])
+                    nb_idx = self.pairing_function(int(nb[0]), int(nb[1]))
                     if nb_idx > idx:
                         candidates_idx.add(nb_idx)
 
@@ -226,7 +226,7 @@ class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
         fit_h = self.window_type.USES_HEIGHT
         fixed_s = self._s  # preserve "unknown spacing" when not refined
 
-        def serialize(g: PeriodicConvexPolygonGridGeometry) -> np.ndarray:
+        def serialize(g: PeriodicConvexPolygonGrid) -> np.ndarray:
             """Express the geometry instance as a series of refined vars."""
             vals = [float(g.x), float(g.y), float(g.t), float(g.w)]
             if fit_h:
@@ -235,7 +235,7 @@ class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
                 vals.append(float(g.s))
             return np.asarray(vals, dtype=float)
 
-        def deserialize(p: np.ndarray) -> PeriodicConvexPolygonGridGeometry:
+        def deserialize(p: np.ndarray) -> PeriodicConvexPolygonGrid:
             """Convert a series of refined vars into a periodic geometry."""
             vals = iter(p)
             x = float(next(vals))
@@ -287,31 +287,31 @@ class PeriodicConvexPolygonGridGeometry(Generic[WindowType]):
         return {'x': self.x, 'y': self.y, 't': self.t, 'w': self.w, 'h': self._h, 's': self._s}
 
 
-class HexagonalGridGeometry(PeriodicConvexPolygonGridGeometry):
+class HexagonalGrid(PeriodicConvexPolygonGrid):
     neighborhood = np.array([(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)], dtype=int)
     pairing_function: PairingFunction = staticmethod(uv2hulam)
     pairing_inverse: PairingInverse = staticmethod(hulam2uv)
     window_type: type[WindowType] = HexagonalWindow
 
 
-class RectangularGridGeometry(PeriodicConvexPolygonGridGeometry[RectangularWindow]):
+class RectangularGrid(PeriodicConvexPolygonGrid[RectangularWindow]):
     neighborhood = np.array([(1, 0), (0, 1), (-1, 0), (0, -1)], dtype=int)
     pairing_function: PairingFunction = staticmethod(ij2ulam)
     pairing_inverse: PairingInverse = staticmethod(ulam2ij)
     window_type: type[WindowType] = RectangularWindow
 
 
-class SquareGridGeometry(PeriodicConvexPolygonGridGeometry[SquareWindow]):
+class SquareGrid(PeriodicConvexPolygonGrid[SquareWindow]):
     neighborhood = np.array([(1, 0), (0, 1), (-1, 0), (0, -1)], dtype=int)
     pairing_function: PairingFunction = staticmethod(ij2ulam)
     pairing_inverse: PairingInverse = staticmethod(ulam2ij)
     window_type: type[WindowType] = SquareWindow
 
 
-GRID_REGISTRY = NoOverwriteDict[str, type[PeriodicConvexPolygonGridGeometry]]()
-GRID_REGISTRY['hexagonal'] = HexagonalGridGeometry
-GRID_REGISTRY['rectangular'] = RectangularGridGeometry
-GRID_REGISTRY['square'] = SquareGridGeometry
+GRID_REGISTRY = NoOverwriteDict[str, type[PeriodicConvexPolygonGrid]]()
+GRID_REGISTRY['hexagonal'] = HexagonalGrid
+GRID_REGISTRY['rectangular'] = RectangularGrid
+GRID_REGISTRY['square'] = SquareGrid
 
 
 if __name__ == '__main__':
@@ -366,7 +366,7 @@ if __name__ == '__main__':
             ]
         )
     }
-    a = SquareGridGeometry(10000, 20000, 0, 50000)
+    a = SquareGrid(10000, 20000, 0, 50000)
     print(a.guess(residuals).to_params())
     print(a.to_params())
     a.refine(residuals)

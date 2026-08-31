@@ -90,11 +90,6 @@ class State:
                 getattr(self, method_name)(**kwargs)
 
     @edits_journal
-    def add_intercepts(self, window: int, intercepts: np.ndarray) -> None:
-        """Add a Nx2 matrix of intercepts of window idx."""
-        self.intercepts[window] = np.asarray(intercepts, dtype=float)
-
-    @edits_journal
     @edits_progress
     def add_region(self, region: int, windows: Sequence[int]) -> None:
         pass

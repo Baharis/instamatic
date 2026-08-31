@@ -24,9 +24,8 @@ from instamatic.experiments.scan_ed.utils import SaveName
 from instamatic.formats import read_tiff
 from instamatic.grid.artist import plot
 from instamatic.grid.finder import GridFinder
-from instamatic.grid.geometry import GRID_REGISTRY, PeriodicConvexPolygonGridGeometry
-from instamatic.grid.sweeping import star_sweep
-from instamatic.gui.click_dispatcher import ClickListener, MouseButton
+from instamatic.grid.grid import GRID_REGISTRY
+from instamatic.gui.click_dispatcher import ClickListener
 
 if TYPE_CHECKING:
     from instamatic.gui import videostream_frame as vsf_type
@@ -70,13 +69,20 @@ class Experiment(ExperimentBase):
         """Initialize, fill a state if first access; raise at load issues."""
         journal_path = self.path / 'journal.jsonl'
         journal = Journal(path=journal_path)
-        self.grid_finder = GridFinder()
-        self.grid_finder.path = journal.path.parent / 'grid.yaml'
+
+        grid_yaml_path = journal.path.parent / 'grid.yaml'
         state = State(journal=journal, progress=self.progress)
         if self.mode in ('continue', 'reprocess'):
+            grid = GridFinder.from_yaml(grid_yaml_path)
             if not journal_path.exists() or not journal_path.is_file():
                 raise FileNotFoundError(f'No journal file found at {journal_path=}')
             state.load_from_journal(fill=self.mode == 'reprocess')
+        else:
+            grid_cls = GRID_REGISTRY[self.params.get('grid_geometry', 'square')]
+            grid = grid_cls(0, 0, 0, 50_000, 50_000)
+
+        self.grid_finder = GridFinder(grid)
+        self.grid_finder.path = grid_yaml_path
         self._state = state
 
     @property
@@ -150,7 +156,7 @@ class Experiment(ExperimentBase):
         # if allowed, add manually as many windows as the user desires.
         self.ctrl.stage.set(a=0)
         if not self.grid_finder.intercepts:
-            method = self.params.get('grid_finder', 'All automatically')
+            method = self.params.get('grid_finding', 'All automatically')
             if method != 'All automatically':
                 d = self.videostream_frame.click_dispatcher
                 n = self.name
