@@ -50,7 +50,8 @@ class GridFinder:
         with open(Path(yaml_path), 'r') as f:
             data = yaml.safe_load(f)
         grid = GRID_REGISTRY[data['grid_type']](**data['geometry'])
-        return cls(grid, data.get('intercepts', {}))
+        intercepts = data.get('intercepts', {})
+        return cls(grid, {k: np.array(v, dtype=float) for k, v in intercepts})
 
     def to_yaml(self, yaml_path: AnyPath) -> None:
         grid_type_name = self.GRID_REGISTRY_INV[type(self.grid)]

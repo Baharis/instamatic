@@ -44,7 +44,7 @@ class ConvexPolygonWindow(Window):
             if y1 == y2:  # edge case (degeneracy / double counting)
                 continue
             intersection_fraction = (y - y1) / (y2 - y1)
-            if not 0 < intersection_fraction < 1:
+            if not 0 <= intersection_fraction < 1:
                 continue  # does not intersect
             intersection_xs.append(x1 + (x2 - x1) * intersection_fraction)
         if len(intersection_xs) < 2:
@@ -58,7 +58,7 @@ class ConvexPolygonWindow(Window):
             if x1 == x2:  # edge case (degeneracy / double counting)
                 continue
             intersection_fraction = (x - x1) / (x2 - x1)
-            if not 0 < intersection_fraction < 1:
+            if not 0 <= intersection_fraction < 1:
                 continue  # does not intersect
             intersection_ys.append(y1 + (y2 - y1) * intersection_fraction)
         if len(intersection_ys) < 2:

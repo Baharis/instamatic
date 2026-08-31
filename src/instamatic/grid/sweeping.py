@@ -120,7 +120,7 @@ class MarchingEdgeSweeper(EdgeSweeper):
         light_here: int = self.peak()
         while light_here > self.team.light_max * self.team.threshold:
             self.step(length=self.team.step_size)
-            light_here: int = self.peak()
+            light_here = self.peak()
 
 
 class BinaryEdgeSweeper(EdgeSweeper):
