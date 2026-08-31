@@ -8,11 +8,10 @@ import numpy as np
 import yaml
 
 from instamatic._typing import AnyPath, float_nm, int_nm
+from instamatic.grid import Intercepts
 from instamatic.grid.grid import GRID_REGISTRY, PeriodicConvexPolygonGrid
 from instamatic.grid.sweeping import star_sweep
 from instamatic.gui.click_dispatcher import ClickListener, MouseButton
-
-Intercepts = dict[int, np.ndarray]
 
 
 class GridFinder:

@@ -14,6 +14,7 @@ from instamatic.calibrate import CalibMovieDelays
 from instamatic.calibrate.calibrate_stage_translation import *
 from instamatic.experiments.experiment_base import ExperimentBase
 from instamatic.experiments.fast_adt.experiment import FastADTMissingCalibError
+from instamatic.experiments.scan_ed.artist import overlay_scan_hits
 from instamatic.experiments.scan_ed.dispatch import DiffHuntDispatcher
 from instamatic.experiments.scan_ed.journal import Journal
 from instamatic.experiments.scan_ed.profile import ScanProfile
@@ -22,7 +23,7 @@ from instamatic.experiments.scan_ed.region import Regionalization
 from instamatic.experiments.scan_ed.state import State
 from instamatic.experiments.scan_ed.utils import SaveName
 from instamatic.formats import read_tiff
-from instamatic.grid.artist import plot
+from instamatic.grid.artist import plot_grid
 from instamatic.grid.finder import GridFinder
 from instamatic.grid.grid import GRID_REGISTRY
 from instamatic.gui.click_dispatcher import ClickListener
@@ -259,7 +260,7 @@ class Experiment(ExperimentBase):
         file_path = self.path / 'windows' / f'window_{window_idx:04d}.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
         intercepts = {window_idx: self.grid_finder.intercepts[window_idx]}
-        fig, ax = plot(self.grid_finder.grid, intercepts=intercepts, show_intercepts=True)
+        fig, ax = plot_grid(self.grid_finder.grid, intercepts=intercepts)
         if not file_path.exists():  # don't overwrite previous img with _edge_xys
             fig.savefig(file_path)
 
@@ -267,20 +268,25 @@ class Experiment(ExperimentBase):
         """Use grid.artist.plot to draw grid into its own file for debug."""
         file_path = self.path / 'windows' / 'windows_all.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
-        fig, ax = plot(self.grid_finder.grid, intercepts=self.grid_finder.intercepts)
+        fig, ax = plot_grid(
+            self.grid_finder.grid,
+            intercepts=self.grid_finder.intercepts,
+            limit_x=self.params.get('target_x'),
+            limit_y=self.params.get('target_y'),
+        )
         fig.savefig(file_path)
 
     def draw_hits_to_file(self):
         """Overlay, save a heatmap of hits onto the plot of grid geometry."""
         file_path = self.path / 'windows' / 'heat_all.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
-        fig, ax = plot(
+        fig, ax = plot_grid(
             self.grid_finder.grid,
-            lines=self.state.lines,
-            scans=self.state.scans,
-            steps=self.state.steps,
-            figsize=(10, 10),
+            intercepts=self.grid_finder.intercepts,
+            limit_x=self.params.get('target_x'),
+            limit_y=self.params.get('target_y'),
         )
+        overlay_scan_hits(ax, self.state.lines, self.state.scans, self.state.steps)
         fig.savefig(file_path)
 
     def set_stop_event_if_target_met(self) -> None:
