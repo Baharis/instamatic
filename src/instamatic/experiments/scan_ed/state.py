@@ -4,12 +4,10 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 import pandas as pd
 
-from instamatic._collections import NoOverwriteDict
 from instamatic._typing import float_nm
 from instamatic.experiments.scan_ed.encoding import *
 from instamatic.experiments.scan_ed.journal import Journal, edits_journal
 from instamatic.experiments.scan_ed.progress import ProgressTable, edits_progress
-from instamatic.grid.geometry import PeriodicConvexPolygonGridGeometry
 
 if TYPE_CHECKING:
     from instamatic.experiments.scan_ed.dispatch import DiffHuntDispatcher
@@ -21,14 +19,10 @@ class State:
     def __init__(
         self,
         journal: Journal,
-        grid: PeriodicConvexPolygonGridGeometry,
         progress: Optional[ProgressTable] = None,
-        intercepts: Optional[dict[int, np.ndarray]] = None,
     ) -> None:
         self.journal: Journal = journal
-        self.grid: PeriodicConvexPolygonGridGeometry = grid
         self.progress: Optional[ProgressTable] = progress
-        self.intercepts: NoOverwriteDict[int, np.ndarray] = NoOverwriteDict(intercepts or {})
         self.dispatcher: Optional[DiffHuntDispatcher] = None
 
         self.lines: pd.DataFrame = pd.DataFrame()
@@ -246,7 +240,3 @@ class State:
             n_peaks = n_peaks.xs(region, level='region', drop_level=False)
         untouched = n_peaks.eq(-1).groupby(level=['region', 'line', 'scan']).all()
         return untouched[untouched].index
-
-    @edits_journal
-    def update_grid(self, params: dict[str, float]) -> None:
-        self.grid = self.grid.__class__(**params)

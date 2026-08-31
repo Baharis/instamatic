@@ -23,6 +23,7 @@ from instamatic.experiments.scan_ed.state import State
 from instamatic.experiments.scan_ed.utils import SaveName
 from instamatic.formats import read_tiff
 from instamatic.grid.artist import plot
+from instamatic.grid.finder import GridFinder
 from instamatic.grid.geometry import GRID_REGISTRY, PeriodicConvexPolygonGridGeometry
 from instamatic.grid.sweeping import star_sweep
 from instamatic.gui.click_dispatcher import ClickListener, MouseButton
@@ -62,14 +63,16 @@ class Experiment(ExperimentBase):
         # attributes initialized once an experiment starts
         self.params: dict[str, Any] = {}
         self.dispatcher: Optional[DiffHuntDispatcher] = None
-        self.regionalization: Optional[Regionalization] = None
+        self.grid_finder: Optional[GridFinder] = None
+        self.reg: Optional[Regionalization] = None
 
     def initialize_state(self) -> None:
         """Initialize, fill a state if first access; raise at load issues."""
         journal_path = self.path / 'journal.jsonl'
         journal = Journal(path=journal_path)
-        grid = GRID_REGISTRY[self.params['grid_geometry']](0, 0, 0, 50_000, 50_000)
-        state = State(journal=journal, grid=grid, progress=self.progress)
+        self.grid_finder = GridFinder()
+        self.grid_finder.path = journal.path.parent / 'grid.yaml'
+        state = State(journal=journal, progress=self.progress)
         if self.mode in ('continue', 'reprocess'):
             if not journal_path.exists() or not journal_path.is_file():
                 raise FileNotFoundError(f'No journal file found at {journal_path=}')
@@ -146,43 +149,44 @@ class Experiment(ExperimentBase):
 
         # if allowed, add manually as many windows as the user desires.
         self.ctrl.stage.set(a=0)
-        if not self.state.intercepts:
-            grid, intercepts = self.determine_grid_manually()
-            self.state.update_grid(grid.to_params())
-            for idx, idx_intercepts in intercepts.items():
-                self.state.add_intercepts(idx, idx_intercepts)
+        if not self.grid_finder.intercepts:
+            method = self.params.get('grid_finder', 'All automatically')
+            if method != 'All automatically':
+                d = self.videostream_frame.click_dispatcher
+                n = self.name
+                cl: ClickListener = c if (c := d.listeners.get(n)) else d.add_listener(n)
+                self.grid_finder.refine_by_manual_clicking(ctrl=self.ctrl, cl=cl)
 
         # Whenever any new window is added manually, draw it and then whole grid
-        for window_idx in self.state.intercepts:
+        for window_idx in self.grid_finder.intercepts:
             self.draw_window_to_file(window_idx=window_idx)
         self.draw_grid_to_file()
 
         # Introduce the logic for grouping windows by regions
         rs = params.get('regionalization', '1 x 1')
-        self.regionalization = Regionalization.from_str(grid=self.state.grid, shape=rs)
+        self.reg = Regionalization.from_str(grid=self.grid_finder.grid, shape=rs)
 
         # MAIN LOOP: define new region and request locating all windows in it
         try:
             for region_idx in count():
-                windows_idx = list(self.regionalization.windows(region_idx=region_idx))
-                self.state.add_region(region_idx, windows_idx)
+                windows_idx = list(self.reg.windows(region_idx=region_idx))
+                if region_idx not in self.progress._region_totals:  # = was added
+                    self.state.add_region(region_idx, windows_idx)
                 for window_idx in windows_idx:
-                    if window_idx not in self.state.intercepts:
+                    if window_idx not in self.grid_finder.intercepts:
                         try:
-                            _, intercepts = self.locate_window(window_idx)
+                            self.grid_finder.refine_by_auto_sweeping(
+                                ctrl=self.ctrl,
+                                window_idx=window_idx,
+                                x_lim=self.params.get('target_x'),
+                                y_lim=self.params.get('target_y'),
+                            )
                         except IndexError:
-                            intercepts = np.zeros(shape=(0, 2), dtype=float)
-                        self.state.add_intercepts(window_idx, intercepts)
-                        self.state.grid.refine(intercepts=self.state.intercepts)
-                        self.state.update_grid(self.state.grid.to_params())
+                            continue  # break if no more windows are in limits
                         self.draw_window_to_file(window_idx=window_idx)
                         self.draw_grid_to_file()
                         if self.stop_event.is_set():
                             break
-
-                # sanitation step: assert the current region is in limits
-                if sum(self.state.intercepts[i].shape[0] for i in windows_idx) == 0:
-                    continue  # should break if no more windows are in limits
 
                 # once region is located, add and run the scans over it
                 if not self.state.has_any_scans(region_idx):
@@ -204,8 +208,8 @@ class Experiment(ExperimentBase):
         """Add scans for window, asserting it does not have scans yet."""
 
         p = self.params
-        windows_idx = self.regionalization.windows(region_idx=region_idx)
-        windows = [self.state.grid.window(idx) for idx in windows_idx]
+        windows_idx = self.reg.windows(region_idx=region_idx)
+        windows = [self.grid_finder.grid.window(idx) for idx in windows_idx]
 
         if p['scan_geometry'].lower().startswith('x'):
             axis = 0
@@ -244,85 +248,12 @@ class Experiment(ExperimentBase):
                     )
                 self.state.add_scan(scan=int(scan_id), tilt=tilt, **shared_id)
 
-    def determine_grid_manually(self) -> tuple[PeriodicConvexPolygonGridGeometry, dict]:
-        grid = self.state.grid
-        method = self.params.get('grid_finder', 'All automatically')
-        if method == 'All automatically':
-            return grid, {}
-
-        d = self.videostream_frame.click_dispatcher
-        n = self.name
-        cl: ClickListener = c if (c := d.listeners.get(n)) else d.add_listener(n)
-
-        print('Please navigate the stage to as many points on one windows edge as possible')
-        print('(at least the corners and midpoints). At each point, position the edge at')
-        print('the center of the screen and LMB to add the point. RMB to finish.')
-
-        candidates: dict[int, np.ndarray] = {}
-        intercepts: dict[int, np.ndarray] = {}
-        window_idx: int = 0
-        while True:
-            edge_xys = []
-            with cl:
-                while True:
-                    c = cl.get_click()
-                    if c.button == MouseButton.RIGHT:
-                        break
-                    edge_xys.append(self.ctrl.stage.xy)
-            edge_xys = np.asarray(edge_xys, dtype=float)
-
-            if 0 in intercepts:
-                new_center = (np.max(edge_xys, axis=0) - np.min(edge_xys, axis=0)) / 2
-                window_idx = grid.nearest_index(*new_center)
-                print(f'Adding another window: estimated index {window_idx}')
-                if window_idx in candidates:
-                    print(f'Warning: window {window_idx} was already added! Overwriting...')
-            candidates[window_idx] = np.asarray(edge_xys, dtype=float)
-
-            grid = grid.guess(candidates)
-            grid.refine(candidates)
-            fig, ax = plot(grid, show_intercepts=True)
-            with self.videostream_frame.processor.temporary(figure=fig), cl:
-                print('LMB to accept and finish, RMB to retry, MMB to accept and new window')
-                c = cl.get_click()
-                if c.button == MouseButton.LEFT:
-                    intercepts[window_idx] = candidates[window_idx]
-                    return grid, intercepts
-                elif c.button == MouseButton.RIGHT:
-                    continue
-                else:  # middle or any other
-                    intercepts[window_idx] = candidates[window_idx]
-                    continue
-
-    def locate_window(self, idx: int = -1) -> tuple[int, np.ndarray]:
-        """Find intersects with a next window, raise if no window be found."""
-        if self.params.get('grid_finder') == 'All manually':
-            raise IndexError('Experiment params disallow locating new windows')
-        if not self.state.intercepts:
-            return 0, star_sweep(arms=3, order=4)
-
-        x_lim = tx if (tx := self.params['target_x']) is not None else 1_000_000
-        y_lim = ty if (ty := self.params['target_y']) is not None else 1_000_000
-
-        in_limits = self.state.grid.windows_in_limits(x=x_lim, y=y_lim)
-        if idx == -1:
-            try:
-                idx = min([i for i in in_limits if i not in self.state.intercepts])
-            except ValueError:
-                raise IndexError('Could not locate next window within limits')
-        else:
-            if idx not in in_limits:
-                raise IndexError(f'Requested window {idx} is not within limits')
-
-        self.ctrl.stage.set(*[int(xy) for xy in self.state.grid.window(idx).center])
-        return idx, star_sweep(arms=3, order=2, offset=11 * idx)
-
     def draw_window_to_file(self, window_idx: int) -> None:
         """Use grid.artist.plot to draw window into its own file for debug."""
         file_path = self.path / 'windows' / f'window_{window_idx:04d}.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
-        intercepts = {window_idx: self.state.intercepts[window_idx]}
-        fig, ax = plot(self.state.grid, intercepts=intercepts, show_intercepts=True)
+        intercepts = {window_idx: self.grid_finder.intercepts[window_idx]}
+        fig, ax = plot(self.grid_finder.grid, intercepts=intercepts, show_intercepts=True)
         if not file_path.exists():  # don't overwrite previous img with _edge_xys
             fig.savefig(file_path)
 
@@ -330,7 +261,7 @@ class Experiment(ExperimentBase):
         """Use grid.artist.plot to draw grid into its own file for debug."""
         file_path = self.path / 'windows' / 'windows_all.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
-        fig, ax = plot(self.state.grid, intercepts=self.state.intercepts)
+        fig, ax = plot(self.grid_finder.grid, intercepts=self.grid_finder.intercepts)
         fig.savefig(file_path)
 
     def draw_hits_to_file(self):
@@ -338,7 +269,7 @@ class Experiment(ExperimentBase):
         file_path = self.path / 'windows' / 'heat_all.png'
         file_path.parent.mkdir(exist_ok=True, parents=True)
         fig, ax = plot(
-            self.state.grid,
+            self.grid_finder.grid,
             lines=self.state.lines,
             scans=self.state.scans,
             steps=self.state.steps,
@@ -391,8 +322,8 @@ class Experiment(ExperimentBase):
     def finalize_scan(self, region_idx: int, line_idx: int, scan_idx: int) -> None:
         """Calculate scan offset, finalize it, save state to journal etc."""
 
-        windows_idx = self.regionalization.windows(region_idx=region_idx)
-        windows = [self.state.grid.window(idx) for idx in windows_idx]
+        windows_idx = self.reg.windows(region_idx=region_idx)
+        windows = [self.grid_finder.grid.window(idx) for idx in windows_idx]
         line = self.state.lines.loc[(region_idx, line_idx)]
         axis = 'xy'[line['axis']]
         fast0 = line['x0'] if axis == 'x' else line['y0']
@@ -417,7 +348,7 @@ class Experiment(ExperimentBase):
         self.state.configure_dispatcher(**self.params)
 
         rs = self.params.get('region_shape', '1x1')
-        self.regionalization = Regionalization.from_str(grid=self.state.grid, shape=rs)
+        self.reg = Regionalization.from_str(grid=self.grid_finder.grid, shape=rs)
 
         shutil.rmtree(self.path / 'tiff', ignore_errors=True)
 
@@ -459,21 +390,3 @@ class Experiment(ExperimentBase):
     def finalize(self) -> None:
         ...
         # TODO
-
-
-# TODO: something tries adding a window at every load
-# Exception in Tkinter callback
-# Traceback (most recent call last):
-#   File "C:\Program Files\Instamatic\Python312\Lib\tkinter\__init__.py", line 1968, in __call__
-#     return self.func(*args)
-#            ^^^^^^^^^^^^^^^^
-#   File "C:\Program Files\Instamatic\Python312\Lib\tkinter\__init__.py", line 862, in callit
-#     func(*args)
-#   File "C:\Program Files\Instamatic\instamatic\src\instamatic\experiments\scan_ed\progress.py", line 261, in _drain
-#     getattr(self._target, name)(*args, **kwargs)
-#   File "C:\Program Files\Instamatic\instamatic\src\instamatic\experiments\scan_ed\progress.py", line 88, in add_region
-#     self.tree.insert('', tk.END, iid=region_iid, text=region_name, values=values)
-#   File "C:\Program Files\Instamatic\Python312\Lib\tkinter\ttk.py", line 1339, in insert
-#     res = self.tk.call(self._w, "insert", parent, index,
-#           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-# _tkinter.TclError: Item r:0 already exists
