@@ -20,18 +20,21 @@ class GridFinder:
 
     grid_type: square
     geometry:
-        x: 11.111
-        y: 22.222
+        x: 11111
+        y: 22222  # nm
         t: 0.033  # degrees
-        w: 44.444
-        s: 6.666
+        w: 44444
+        s: 6666
     intercepts:
         0:
-          - [0.001, 0.002]
-          - [5.003, 5.004]
+          - [1.001, 2.002]
+          - [3.003, 4.004]
           # ...
         -1: # fresh, not assigned to a window yet
-          - [99.005, 99.006]
+          - [88005, 88006]
+          - [99007, 99008]
+          # ...
+        # ...
     """
 
     GRID_REGISTRY_INV = {v: k for k, v in GRID_REGISTRY.items()}
@@ -51,7 +54,7 @@ class GridFinder:
             data = yaml.safe_load(f)
         grid = GRID_REGISTRY[data['grid_type']](**data['geometry'])
         intercepts = data.get('intercepts', {})
-        return cls(grid, {k: np.array(v, dtype=float) for k, v in intercepts})
+        return cls(grid, {k: np.array(v, dtype=float) for k, v in intercepts.items()})
 
     def to_yaml(self, yaml_path: AnyPath) -> None:
         grid_type_name = self.GRID_REGISTRY_INV[type(self.grid)]

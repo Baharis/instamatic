@@ -51,17 +51,20 @@ def plot_grid(
 
     cmap = plt.colormaps.get_cmap('tab10')
     for idx in indices:
-        window = grid.window(idx)
-        corners = np.asarray(window.corners, dtype=float)
-        ax.add_patch(Polygon(corners, **patch_kw))
-
-        if show_indices:
-            cx, cy = map(float, window.center)
-            ax.text(cx, cy, str(idx), **text_kw)
+        try:
+            window = grid.window(idx)
+        except ValueError:  # negative/invalid Ulam index
+            color = '#808080'
+        else:
+            color = cmap(idx % 10)
+            corners = np.asarray(window.corners, dtype=float)
+            ax.add_patch(Polygon(corners, **patch_kw))
+            if show_indices:
+                cx, cy = map(float, window.center)
+                ax.text(cx, cy, str(idx), **text_kw)
 
         if show_intercepts and intercepts and idx in intercepts:
             xys = np.asarray(intercepts[idx], dtype=float)
-            color = cmap(idx % 10)
             ax.plot(
                 xys[:, 0],
                 xys[:, 1],
