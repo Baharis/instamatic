@@ -79,6 +79,10 @@ class PeriodicConvexPolygonGrid(Generic[WindowType]):
         self._h = h
         self._s = s
 
+    def __repr__(self) -> str:
+        params = ', '.join(f'{k}: {v}' for k, v in self.to_params().items())
+        return f'{self.__class__.__name__}({params})'
+
     def normalized(self) -> Self:
         """Align w with X axis by casting theta to [+,- interior angle / 2]"""
         a = float(self.window_type.INTERIOR_ANGLE)
@@ -244,7 +248,7 @@ class PeriodicConvexPolygonGrid(Generic[WindowType]):
             w = float(next(vals))
             h = float(next(vals)) if fit_h else None
             s = float(next(vals)) if refine_spacing else fixed_s
-            return self.__class__(x=x, y=y, t=t, w=w, h=h, s=s)
+            return self.__class__(x=x, y=y, t=t, w=w, h=h, s=s).normalized()
 
         def residuals(p: np.ndarray) -> np.ndarray:
             """Calculate residual for each window in refined geometry."""
@@ -278,7 +282,7 @@ class PeriodicConvexPolygonGrid(Generic[WindowType]):
 
         self.x = geometry.x
         self.y = geometry.y
-        self.t = (geometry.t + 90) % 180 - 90
+        self.t = geometry.t
         self.w = geometry.w
         self.h = geometry.h
         self.s = geometry._s

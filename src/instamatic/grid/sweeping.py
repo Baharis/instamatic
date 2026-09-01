@@ -9,6 +9,7 @@ from typing_extensions import Self
 
 from instamatic._typing import float_deg, float_nm, int_nm
 from instamatic.controller import TEMController, _ctrl, initialize
+from instamatic.grid import cross2d, versor
 from instamatic.utils.iterating import pairwise
 
 if not _ctrl:
@@ -16,21 +17,6 @@ if not _ctrl:
 
 
 Vector2 = Sequence[float]
-
-
-def cross2d(a: np.ndarray, b: np.ndarray) -> float:
-    """A scalar 2d cross product between two arrays of length 2."""
-    return (a[0] * b[1] - a[1] * b[0]).item()
-
-
-def versor(
-    *,
-    deg: Optional[Union[float, np.ndarray]] = None,
-    rad: Optional[Union[float, np.ndarray]] = None,
-) -> np.ndarray:
-    """A versor in the direction of angle expressed in radians or degrees."""
-    radians = np.deg2rad(deg) if rad is None else rad
-    return np.array([np.cos(radians), np.sin(radians)], dtype=float)
 
 
 class InstanceAutoNameRegistry:

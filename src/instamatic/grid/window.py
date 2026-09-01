@@ -7,6 +7,7 @@ import numpy as np
 from typing_extensions import Self
 
 from instamatic._typing import float_nm
+from instamatic.grid import versor
 from instamatic.utils.iterating import pairwise
 
 X = np.array([1, 0], dtype=float)
@@ -14,16 +15,6 @@ Y = np.array([0, 1], dtype=float)
 
 
 WindowGeometryTuple = tuple[float_nm, float_nm, float, float_nm, Optional[float_nm]]
-
-
-def versor(
-    *,
-    deg: Optional[Union[float, np.ndarray]] = None,
-    rad: Optional[Union[float, np.ndarray]] = None,
-) -> np.ndarray:
-    """A versor in the direction of angle expressed in radians or degrees."""
-    radians = np.deg2rad(deg) if rad is None else rad
-    return np.array([np.cos(radians), np.sin(radians)], dtype=float)
 
 
 class Window(ABC):
@@ -205,7 +196,7 @@ class HexagonalWindow(GridablePolygonWindow):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.a = 0.5 * self.w * versor(deg=self.t).T
+        self.a = 0.5 * self.w * versor(deg=self.t)
         self.b = self.ROT60MAT @ self.a
 
         angles = self.t + np.array([30, 90, 150, 210, 270, 330], dtype=float)
@@ -241,7 +232,7 @@ class RectangularWindow(GridablePolygonWindow):
         c = self.center
         self.a = a = 0.5 * self.w * versor(deg=self.t)
         self.b = b = 0.5 * self.h * versor(deg=self.t + 90)
-        self.corners = np.vstack([c + a + b, c + a - b, c - a - b, c - a + b])
+        self.corners = np.vstack([c + a + b, c - a + b, c - a - b, c + a - b])
 
     def to_params(self) -> dict[str, float]:
         return {'x': self.x, 'y': self.y, 't': self.t, 'w': self.w, 'h': self.h}

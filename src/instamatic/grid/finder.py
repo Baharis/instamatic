@@ -12,7 +12,6 @@ import yaml
 from instamatic._typing import AnyPath, float_nm, int_nm
 from instamatic.grid import Intercepts
 from instamatic.grid.grid import GRID_REGISTRY, PeriodicConvexPolygonGrid
-from instamatic.grid.sweeping import star_sweep
 from instamatic.gui.click_dispatcher import ClickEvent, ClickListener, MouseButton
 
 
@@ -88,7 +87,11 @@ class GridFinder:
             self.grid = type(self.grid).guess({0: xy})
         new_intercepts = self.intercepts[window_idx]
         del self.intercepts[window_idx]
-        self.intercepts[new_window_idx] = new_intercepts
+        if new_window_idx in self.intercepts:
+            oi = self.intercepts[window_idx]
+            self.intercepts[new_window_idx] = np.vstack([oi, new_intercepts])
+        else:
+            self.intercepts[new_window_idx] = new_intercepts
         self.grid.refine(self.intercepts)
         if self.path is not None:
             self.to_yaml(self.path)
@@ -135,13 +138,15 @@ class GridFinder:
 
         Navigate to `window_idx` or next window and, if it is inside a bounding
         box span by `x_lim` and `y_lim`, look for the edges by monitoring total
-        intensity. `arms`, `order`, `offset` determine `star_search` precision.
+        intensity. `arms`, `order`, `offset` determine `star_sweep` precision.
         """
+        from instamatic.grid.sweeping import star_sweep
+
         idx = window_idx
         if not self.intercepts:
             idx = 0
         else:
-            d_lim = (sqrt(max(self.intercepts)) + 2) * (self.grid.w + self.grid.h)
+            d_lim = (sqrt(abs(max(self.intercepts))) + 2) * (self.grid.w + self.grid.h)
             x_lim = x_lim or d_lim  # crude estimate of new window search area
             y_lim = y_lim or d_lim  # if no limits was given: (sqrt(idx)+2)(w+h)
             idc_in_limits = self.grid.windows_in_limits(x=x_lim, y=y_lim)
@@ -226,7 +231,7 @@ def main():
     gf.path = args.file
     ctrl = initialize()
 
-    if args.command == 'manual':
+    if args.method == 'manual':
 
         class TerminalClickListener:
             """Mocks ClickListener for CLI by mapping keyboard inputs to
