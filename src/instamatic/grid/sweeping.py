@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import chain
-from typing import Any, Literal, Optional, Sequence, Union
+from typing import Any, Generator, Literal, Optional, Sequence, Union
 
 import numpy as np
 from typing_extensions import Self
@@ -156,26 +156,28 @@ def star_sweep(
     arms: Literal[3, 4, 5, 6, 7] = 5,
     order: Literal[1, 2, 3, 4, 5] = 5,
     offset: float_deg = 0,
-) -> np.ndarray:
-    """Sweep window, return (arms*2**order)x2 list of points on its edge."""
+) -> Generator[Vector2, None, None]:
+    """Sweep window, yielding (x, y) points on its edge as they are found."""
     center: Vector2 = np.array(_ctrl.stage.xy, dtype=int)
     team = str(center)
     _ = EdgeSweeperTeam(name=team)
 
-    # define and sweep with initial marching sweepers to approx. grid center
+    # define and sweep with initial sweepers to approximate grid center (order=1)
     headings = offset + np.linspace(0, 360, num=arms, endpoint=False, dtype=float)
     directions = [versor(deg=h) for h in headings]
-    bess = [BinaryEdgeSweeper(origin=center, heading=d, team=team) for d in directions]
-    for bes in bess:
-        bes.sweep()
+    bes = [BinaryEdgeSweeper(origin=center, heading=d, team=team) for d in directions]
 
-    # for each order, create a new generation of beam sweepers and sweep
-    def bisectors(sweepers: list[BinaryEdgeSweeper]) -> list[BinaryEdgeSweeper]:
-        new = [a.breed(b) for a, b in pairwise(sweepers, closed=True)]
-        for ns in new:
-            ns.sweep()
-        return new
+    for sweeper in bes:
+        sweeper.sweep()
+        yield sweeper.position
 
+    # For each order above 1, generate bisectors of previous orders, sweep, yield
+    finished_bes = bes
     for _ in range(1, order):
-        bess = list(chain.from_iterable(zip(bess, bisectors(bess))))
-    return np.vstack([bes.position for bes in bess])  # Nx2
+        new_bes = []
+        for a, b in pairwise(finished_bes, closed=True):
+            ns = a.breed(b)
+            ns.sweep()
+            yield ns.position
+            new_bes.append(ns)
+        finished_bes = list(chain.from_iterable(zip(finished_bes, new_bes)))

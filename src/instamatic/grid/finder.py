@@ -161,8 +161,7 @@ class GridFinder:
         ss_arms = arms if arms is not None else 3
         ss_offset = offset if offset is not None else 17 * idx
 
-        new_intercepts = star_sweep(arms=ss_arms, order=ss_order, offset=ss_offset)
-        for xy in new_intercepts:
+        for xy in star_sweep(arms=ss_arms, order=ss_order, offset=ss_offset):
             self.add_intercept(idx, *xy)
         self.fit_intercepts(idx)
 
