@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from math import sqrt
 from pathlib import Path
+from textwrap import dedent
 from typing import Optional
 
 import numpy as np
@@ -11,12 +13,12 @@ from instamatic._typing import AnyPath, float_nm, int_nm
 from instamatic.grid import Intercepts
 from instamatic.grid.grid import GRID_REGISTRY, PeriodicConvexPolygonGrid
 from instamatic.grid.sweeping import star_sweep
-from instamatic.gui.click_dispatcher import ClickListener, MouseButton
+from instamatic.gui.click_dispatcher import ClickEvent, ClickListener, MouseButton
 
 
 class GridFinder:
     """Base strategy for determining and updating grid geometry.
-    Can be stored in a yaml file in the following format:
+    Can be written to or read from a yaml file in the following format:
 
     grid_type: square
     geometry:
@@ -27,10 +29,10 @@ class GridFinder:
         s: 6666
     intercepts:
         0:
-          - [1.001, 2.002]
-          - [3.003, 4.004]
+          - [1001, 2002]
+          - [3003, 4004]
           # ...
-        -1: # fresh, not assigned to a window yet
+        -1: # negative number = fresh entry, not assigned to a window yet
           - [88005, 88006]
           - [99007, 99008]
           # ...
@@ -46,7 +48,7 @@ class GridFinder:
     ) -> None:
         self.grid = grid or GRID_REGISTRY['square'](0, 0, 0, 50_000, 50_000)
         self.intercepts: Intercepts = intercepts or {}
-        self.path: Optional[AnyPath] = None  # if present, auto-save changes here
+        self.path: Optional[AnyPath] = None  # if present, auto-save here
 
     @classmethod
     def from_yaml(cls, yaml_path: AnyPath) -> GridFinder:
@@ -92,10 +94,14 @@ class GridFinder:
             self.to_yaml(self.path)
 
     def refine_by_manual_clicking(self, ctrl, cl: ClickListener) -> None:
-        """Update grid & intercepts via clicks when stage is at window edge."""
-        print('Please navigate the stage to as many points on one windows edge as possible')
-        print('(at least the corners and midpoints). At each point, position the edge at')
-        print('the center of the screen and LMB to add the point. RMB to finish.')
+        """Update grid & intercepts via clicks when stage is at window edge.
+
+        Navigate the stage to as many points on one windows edge as
+        possible (at least the corners and midpoints). At each point,
+        position the edge at the center of the screen and LMB to add the
+        point. RMB to finish.
+        """
+        print(dedent(self.refine_by_manual_clicking.__doc__))
         while True:
             prev_grid, prev_intercepts = self.grid, self.intercepts
             with cl:
@@ -121,8 +127,16 @@ class GridFinder:
         window_idx: int = -1,
         x_lim: Optional[int_nm] = None,
         y_lim: Optional[int_nm] = None,
+        arms: Optional[int] = None,
+        order: Optional[int] = None,
+        offset: Optional[float] = None,
     ) -> None:
-        """Let grid & intercepts refine by automatically looking for edges."""
+        """Let grid & intercepts refine by automatically looking for edges.
+
+        Navigate to `window_idx` or next window and, if it is inside a bounding
+        box span by `x_lim` and `y_lim`, look for the edges by monitoring total
+        intensity. `arms`, `order`, `offset` determine `star_search` precision.
+        """
         idx = window_idx
         if not self.intercepts:
             idx = 0
@@ -141,8 +155,112 @@ class GridFinder:
                     raise IndexError(f'Requested window {idx} is not within limits')
 
         ctrl.stage.set(*[int(xy) for xy in self.grid.window(idx).center])
-        ss_order = 3 if idx == 0 else 2 if len(self.intercepts.keys()) < 4 else 1
-        new_intercepts = star_sweep(arms=3, order=ss_order, offset=17 * idx)
+
+        smart_order = 3 if idx == 0 else 2 if len(self.intercepts.keys()) < 4 else 1
+        ss_order = smart_order if order is None else order
+        ss_arms = arms if arms is not None else 3
+        ss_offset = offset if offset is not None else 17 * idx
+
+        new_intercepts = star_sweep(arms=ss_arms, order=ss_order, offset=ss_offset)
         for xy in new_intercepts:
             self.add_intercept(idx, *xy)
         self.fit_intercepts(idx)
+
+
+def main():
+    """CLI tool to determine grid geometry using various methods."""
+
+    from instamatic.controller import initialize
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument(
+        '-f',
+        '--file',
+        type=str,
+        help='A custom path to the grid.yaml file with results',
+        default='grid.yaml',
+    )
+
+    subparsers = parser.add_subparsers(
+        dest='method',
+        required=True,
+        help='Method of grid geometry determination',
+    )
+
+    _ = subparsers.add_parser('manual', help='Manual via moving stage & input')
+    a = subparsers.add_parser('auto', help='Automatically via star sweeping')
+
+    a.add_argument(
+        '--idx',
+        type=int,
+        default=-1,
+        help='Target window index to find (default: next available window)',
+    )
+
+    a.add_argument(
+        '--arms',
+        type=int,
+        default=3,
+        choices=[3, 4, 5, 6, 7],
+        help='Number of directions the sweep arms will go to find edge',
+    )
+
+    a.add_argument(
+        '--order',
+        type=int,
+        default=3,
+        choices=[1, 2, 3, 4, 5],
+        help='For each order above 1, sweep also in previous orders midpoints',
+    )
+
+    a.add_argument(
+        '--offset',
+        type=float,
+        default=0.0,
+        help='Rotate the arms by this much degrees before first order search.',
+    )
+
+    args = parser.parse_args()
+
+    # Initialize finding logic and controller
+    gf = GridFinder.from_yaml(args.file)
+    gf.path = args.file
+    ctrl = initialize()
+
+    if args.command == 'manual':
+
+        class TerminalClickListener:
+            """Mocks ClickListener for CLI by mapping keyboard inputs to
+            MouseButtons."""
+
+            def __enter__(self) -> TerminalClickListener:
+                print('Entering terminal mock for mouse button click listener.')
+                print('Press "ENTER" for LMB, R+ENTER for RMB, M+ENTER for MMB.')
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+                pass
+
+            def get_click(self) -> ClickEvent:
+                """Prompt user for terminal input to simulate mouse clicks."""
+                from instamatic.gui.click_dispatcher import ClickEvent, MouseButton
+
+                cmd = input('>> ').strip().lower()
+
+                if cmd == 'r':
+                    return ClickEvent(button=MouseButton.RIGHT)
+                elif cmd == 'm':
+                    return ClickEvent(button=MouseButton.MIDDLE)
+                return ClickEvent(button=MouseButton.LEFT)
+
+        cl = TerminalClickListener()
+        gf.refine_by_manual_clicking(ctrl, cl)
+
+    elif args.command == 'auto':
+        gf.refine_by_auto_sweeping(
+            ctrl=ctrl, window_idx=args.idx, arms=args.arms, order=args.order, offset=args.offset
+        )
+
+
+if __name__ == '__main__':
+    main()
