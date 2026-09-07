@@ -75,11 +75,41 @@ class CameraGatan2(CameraBase):
 
     def get_image(
         self,
-        exposure=0.400,
-        binning=1,
-        processing='gain normalized',
+        exposure: float | None = None,
+        binsize: int | None = None,
+        *,
+        # Backwards-compatible alias: older code/tests used `binning=`.
+        binning: int | None = None,
+        processing: str = 'gain normalized',
+        **kwargs,
     ) -> 'np.array':
-        """Acquire image through DM and return data as np array."""
+        """Acquire image through DM and return data as np array.
+
+        Notes
+        -----
+        Instamatic's public API uses `binsize` everywhere (controller,
+        videostream, CLI). Historically this driver used `binning` instead,
+        which prevented GUI/Controller code from changing binning.
+
+        This implementation accepts both names; if both are provided,
+        `binning` wins.
+        """
+
+        if exposure is None:
+            exposure = self.default_exposure
+
+        # Prefer explicit `binning`, otherwise fall back to Instamatic's `binsize`.
+        if binning is None:
+            binning = binsize if binsize is not None else self.default_binsize
+
+        # Optional validation (only if config defines these).
+        try:
+            if self.possible_binsizes and binning not in self.possible_binsizes:
+                raise ValueError(
+                    f'Cannot use binsize/binning={binning}..., should be one of {self.possible_binsizes}'
+                )
+        except AttributeError:
+            pass
 
         width, height = self.dimensions
         top = 0
@@ -98,6 +128,7 @@ class CameraGatan2(CameraBase):
             right=right,
             exposure=exposure,
             shutterDelay=0,
+            **kwargs,
         )
 
         return arr

@@ -78,18 +78,22 @@ enum_gs = [
 # lookup table of function name to function code, starting with 1
 enum_gs = {x: y for (y, x) in enumerate(enum_gs, 1)}
 
-# C "long" -> numpy "int_"
+# NOTE: The SEMCCD (SerialEMCCD) socket protocol uses 32-bit signed integers for C "long" on Windows.
+#       Do NOT use np.int_ here: on 64-bit Python it is 64-bit and will break message sizes/offsets.
 ARGS_BUFFER_SIZE = 1024
 MAX_LONG_ARGS = 16
 MAX_DBL_ARGS = 8
 MAX_BOOL_ARGS = 8
+
+# Explicit 32-bit, little-endian integer used by the SEMCCD socket protocol (Windows C long).
+C_LONG = np.dtype('<i4')
 sArgsBuffer = np.zeros(ARGS_BUFFER_SIZE, dtype=np.byte)
 
 
-def string_to_longarray(string: str, *, dtype: np.dtype = np.int_) -> np.ndarray:
-    """Convert the string to a 1D np array of dtype (default np.int_ - C long)
-    with numpy2-save padding to ensure length is a multiple of dtype.itemsize.
-    """
+def string_to_longarray(string: str, *, dtype: np.dtype = C_LONG) -> np.ndarray:
+    """Convert the string to a 1D np array of dtype (default C_LONG (32-bit C
+    long on Windows)) with numpy2-save padding to ensure length is a multiple
+    of dtype.itemsize."""
     s_bytes = string.encode('utf-8')
     dtype_size = np.dtype(dtype).itemsize
     if extra := len(s_bytes) % dtype_size:
@@ -105,7 +109,7 @@ class Message:
     """
 
     def __init__(self, longargs=[], boolargs=[], dblargs=[], longarray=[]):
-        # Strings are packaged as long array using np.frombuffer(buffer,np.int_)
+        # Strings are packaged as long array using np.frombuffer(buffer, C_LONG)
         # and can be converted back with longarray.tobytes()
         # add final longarg with size of the longarray
         if len(longarray):
@@ -113,11 +117,11 @@ class Message:
             longargs.append(len(longarray))
 
         self.dtype = [
-            ('size', np.intc),
-            ('longargs', np.int_, (len(longargs),)),
+            ('size', np.int32),
+            ('longargs', C_LONG, (len(longargs),)),
             ('boolargs', np.int32, (len(boolargs),)),
             ('dblargs', np.double, (len(dblargs),)),
-            ('longarray', np.int_, (len(longarray),)),
+            ('longarray', C_LONG, (len(longarray),)),
         ]
         self.array = np.zeros((), dtype=self.dtype)
         self.array['size'] = self.array.data.itemsize
@@ -127,10 +131,10 @@ class Message:
         self.array['longarray'] = longarray
 
         # create numpy arrays for the args and array
-        # self.longargs = np.asarray(longargs, dtype=np.int_)
+        # self.longargs = np.asarray(longargs, dtype=C_LONG)
         # self.dblargs = np.asarray(dblargs, dtype=np.double)
         # self.boolargs = np.asarray(boolargs, dtype=np.int32)
-        # self.longarray = np.asarray(longarray, dtype=np.int_)
+        # self.longarray = np.asarray(longarray, dtype=C_LONG)
 
     def pack(self):
         """Serialize the data."""
@@ -184,6 +188,9 @@ class GatanSocket:
                 'Must specify a port to GatanSocket instance, or set environment variable SERIALEMCCD_PORT'
             )
 
+        # Environment variables are strings; normalize port to int for socket operations.
+        self.port = int(self.port)
+
         self.debug = os.environ.get('SERIALEMCCD_DEBUG', 0)
         if self.debug:
             print('host', repr(self.host))
@@ -234,12 +241,30 @@ class GatanSocket:
         return result > 0.0
 
     def connect(self):
-        # recommended by Gatan to use localhost IP to avoid using tcp
-        self.sock = socket.create_connection(('127.0.0.1', self.port))
+        # Use 127.0.0.1 when DM and client are on the same PC; otherwise set `host` to the DM PC IP/hostname.
+        host = self.host or '127.0.0.1'
+        self.sock = socket.create_connection((host, self.port))
+        # Prevent indefinite hangs on recv() if the DM plugin does not return data.
+        # A modest default is safer for automation; user code may override.
+        try:
+            self.sock.settimeout(float(os.environ.get('SERIALEMCCD_TIMEOUT', '10')))
+        except Exception:
+            # Do not fail connection if timeout cannot be set.
+            pass
+        try:
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
 
     def disconnect(self):
-        self.sock.shutdown(socket.SHUT_RDWR)
-        self.sock.close()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
     def reconnect(self):
         self.disconnect()
@@ -247,7 +272,15 @@ class GatanSocket:
 
     @logwrap
     def send_data(self, data):
-        return self.sock.sendall(data)
+        try:
+            return self.sock.sendall(data)
+        except (TimeoutError, socket.timeout, OSError) as exc:
+            # DM/SEMCCD can temporarily stop reading requests when busy; reconnect and retry once.
+            try:
+                self.reconnect()
+                return self.sock.sendall(data)
+            except Exception:
+                raise exc
 
     @logwrap
     def recv_data(self, n):
@@ -346,7 +379,7 @@ class GatanSocket:
         funcCode = enum_gs['GS_SetK2Parameters']
 
         self.save_frames = saveFrames
-        longarray = string_to_longarray(filt + '\0', dtype=np.int_)  # filter name
+        longarray = string_to_longarray(filt + '\0', dtype=C_LONG)  # filter name
 
         longs = [
             funcCode,
@@ -401,7 +434,7 @@ class GatanSocket:
             longs = [enum_gs['GS_SetupFileSaving'], rotationFlip]
             dbls = [pixelSize]
         bools = [filePerImage]
-        longarray = string_to_longarray(dirname + '\0' + rootname + '\0', dtype=np.int_)
+        longarray = string_to_longarray(dirname + '\0' + rootname + '\0', dtype=C_LONG)
         message_send = Message(
             longargs=longs, boolargs=bools, dblargs=dbls, longarray=longarray
         )
@@ -482,6 +515,12 @@ class GatanSocket:
         return self.ExecuteGetDoubleScript(script)
 
     @logwrap
+    ############## added not defined get_image class in gatan_camera2.py
+    def get_image(self, **kwargs):
+        return self.GetImage(**kwargs)
+
+    #####################################################################################
+
     def GetImage(
         self,
         processing,
@@ -500,12 +539,45 @@ class GatanSocket:
             Must be one of 'dark', 'unprocessed', 'dark subtracted', 'gain normalized'
         """
 
+        # Normalize/validate acquisition parameters.
+        # The SEMCCD plugin expects the requested width/height and ROI coordinates to be in
+        # *binned* pixels for CM_SetBinnedReadArea. If we pass full-frame dimensions together
+        # with binning>1, DM will throw an exception and the plugin will return zeros.
+        binning = int(binning) if binning is not None else 1
+        if binning not in (1, 2, 4):
+            raise ValueError(f'Unsupported binning: {binning} (expected 1, 2, or 4)')
+
+        width = int(width)
+        height = int(height)
+        top = int(top)
+        left = int(left)
+        bottom = int(bottom)
+        right = int(right)
+
+        # Convert ROI from unbinned to binned coordinates when binning>1.
+        # We interpret (top,left,bottom,right) as an unbinned ROI in pixels.
+        if binning > 1:
+            roi_w = right - left
+            roi_h = bottom - top
+            if roi_w <= 0 or roi_h <= 0:
+                raise ValueError(
+                    f'Invalid ROI: left={left}, top={top}, right={right}, bottom={bottom}'
+                )
+            # Downscale ROI to binned pixel coordinates (truncate to integer pixels).
+            left //= binning
+            top //= binning
+            width = roi_w // binning
+            height = roi_h // binning
+            right = left + width
+            bottom = top + height
+
         arrSize = width * height
 
         # TODO: need to figure out what these should be
         shutter = 0
         divideBy2 = 0
-        corrections = 0
+        corrections = -1
+        # corrections = 0
         settling = 0.0
 
         # prepare args for message
@@ -561,32 +633,56 @@ class GatanSocket:
         longargs = message_recv.array['longargs']
         if longargs[0] < 0:
             return 1
-        arrSize = longargs[1]
-        width = longargs[2]
-        height = longargs[3]
-        numChunks = longargs[4]
+        arrSize = int(longargs[1])
+        width = int(longargs[2])
+        height = int(longargs[3])
+        numChunks = int(longargs[4])
         bytesPerPixel = 2
         numBytes = arrSize * bytesPerPixel
-        chunkSize = (numBytes + numChunks - 1) / numChunks
-        imArray = np.zeros((height, width), np.ushort)
+
+        # Defensive checks: if the plugin returns invalid dimensions, fail fast with diagnostics.
+        if width <= 0 or height <= 0 or arrSize <= 0:
+            raise RuntimeError(
+                f'Invalid image metadata from SEMCCD plugin: arrSize={arrSize}, width={width}, height={height}, numChunks={numChunks}'
+            )
+        if numChunks <= 0:
+            raise RuntimeError(
+                f'Invalid chunk count from SEMCCD plugin: numChunks={numChunks} (arrSize={arrSize}, width={width}, height={height})'
+            )
+
+        # Use integer chunk size (ceil division). Float chunk sizes can cause recv() to misbehave.
+        chunkSize = (numBytes + numChunks - 1) // numChunks
+
+        # IMPORTANT (Python 3.11+): avoid numpy/memoryview slice assignment into a multi-dim buffer.
+        # Accumulate raw bytes into a 1D bytearray, then view as uint16.
+        buf = bytearray(numBytes)
+        mv = memoryview(buf)
         received = 0
         remain = numBytes
+
         for chunk in range(numChunks):
             # send chunk handshake for all but the first chunk
             if chunk:
                 message_send = Message(longargs=(enum_gs['GS_ChunkHandshake'],))
                 self.ExchangeMessages(message_send)
+
             thisChunkSize = min(remain, chunkSize)
-            chunkReceived = 0
             chunkRemain = thisChunkSize
             while chunkRemain:
                 new_recv = self.recv_data(chunkRemain)
+                if not new_recv:
+                    raise ConnectionError(
+                        f'Socket closed while receiving image data (received={received}/{numBytes} bytes)'
+                    )
                 len_recv = len(new_recv)
-                imArray.data[received : received + len_recv] = new_recv
-                chunkReceived += len_recv
+                mv[received : received + len_recv] = new_recv
                 chunkRemain -= len_recv
                 remain -= len_recv
                 received += len_recv
+
+        # Convert bytes -> uint16 image
+        imArray = np.frombuffer(buf, dtype=np.uint16, count=arrSize)
+        imArray = imArray.reshape((height, width))
         return imArray
 
     def ExecuteSendCameraObjectionFunction(self, function_name, camera_id=0):
@@ -665,9 +761,9 @@ class GatanSocket:
         recv_dblargs_init=(0.0,),
         recv_longarray_init=None,
     ):
-        """Send the command string as a 1D longarray of np.int_ dtype."""
+        """Send the command string as a 1D longarray of C_LONG dtype."""
         funcCode = enum_gs['GS_ExecuteScript']
-        longarray = string_to_longarray(command_line + '\0', dtype=np.int_)
+        longarray = string_to_longarray(command_line + '\0', dtype=C_LONG)
         message_send = Message(
             longargs=(funcCode,), boolargs=(select_camera,), longarray=longarray
         )

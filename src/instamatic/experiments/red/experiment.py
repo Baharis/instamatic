@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 from instamatic import config
 from instamatic.experiments.experiment_base import ExperimentBase
 from instamatic.formats import write_tiff
-from instamatic.processing.ImgConversionTPX import ImgConversionTPX as ImgConversion
+from instamatic.processing.ImgConversionDM import ImgConversionDM as ImgConversion
 
 
 class Experiment(ExperimentBase):
@@ -27,7 +27,15 @@ class Experiment(ExperimentBase):
         Path to flatfield correction image
     """
 
-    def __init__(self, ctrl, path: str = None, log=None, flatfield=None):
+    def __init__(
+        self,
+        ctrl,
+        path: str = None,
+        log=None,
+        flatfield=None,
+        write_tiff: bool = True,
+        write_red: bool = True,
+    ):
         super().__init__()
         self.ctrl = ctrl
         self.path = Path(path)
@@ -44,6 +52,9 @@ class Experiment(ExperimentBase):
         self.camtype = ctrl.cam.name
 
         self.flatfield = flatfield
+
+        self.write_tiff = bool(write_tiff)
+        self.write_red = bool(write_red)
 
         self.offset = 1
         self.current_angle = None
@@ -85,58 +96,72 @@ class Experiment(ExperimentBase):
         tilt_positions = np.arange(start_angle, start_angle + tilt_range, stepsize)
         print(f'\nStart_angle: {start_angle:.3f}')
         # print "Angles:", tilt_positions
+        # Safety: block videostream before any SEMCCD image acquisition to avoid socket desync
+        cam_blocked = False
+        if getattr(ctrl.cam, 'streamable', False):
+            try:
+                ctrl.cam.block()
+                cam_blocked = True
+                time.sleep(
+                    0.5
+                )  # let stream thread stop / drain before starting RED acquisition
+            except Exception:
+                cam_blocked = False
 
-        image_mode = ctrl.mode.get()
-        if image_mode != 'diff':
-            fn = self.tiff_image_path / f'image_{self.offset}.tiff'
-            img, h = self.ctrl.get_image(exposure_time / 5)
-            write_tiff(fn, img, header=h)
-            ctrl.mode.set('diff')
-            time.sleep(1.0)  # add some delay to account for beam lag
+        try:
+            image_mode = ctrl.mode.get()
+            if image_mode != 'diff':
+                fn = self.tiff_image_path / f'image_{self.offset}.tiff'
+                img, h = self.ctrl.get_image(exposure_time / 5)
+                time.sleep(0.2)
+                write_tiff(fn, img, header=h)
+                ctrl.mode.set('diff')
+                time.sleep(1.0)  # add some delay to account for beam lag
 
-        if ctrl.cam.streamable:
-            ctrl.cam.block()
+            # for i, a in enumerate(tilt_positions):
+            for i, angle in enumerate(tqdm(tilt_positions)):
+                ctrl.stage.a = angle
 
-        # for i, a in enumerate(tilt_positions):
-        for i, angle in enumerate(tqdm(tilt_positions)):
-            ctrl.stage.a = angle
+                j = i + self.offset
 
-            j = i + self.offset
+                img, h = self.ctrl.get_image(exposure_time)
 
-            img, h = self.ctrl.get_image(exposure_time)
+                self.buffer.append((j, img, h))
 
-            self.buffer.append((j, img, h))
+            self.offset += len(tilt_positions)
+            self.nframes = j
 
-        self.offset += len(tilt_positions)
-        self.nframes = j
+            self.end_angle = end_angle = ctrl.stage.a
 
-        self.end_angle = end_angle = ctrl.stage.a
+            self.camera_length = int(self.ctrl.magnification.get())
+            self.stepsize = stepsize
+            self.exposure_time = exposure_time
 
-        if ctrl.cam.streamable:
-            ctrl.cam.unblock()
+            with open(self.path / 'summary.txt', 'a') as f:
+                print(
+                    f'{self.now}: Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree in {len(tilt_positions)} frames.',
+                    file=f,
+                )
+                print(
+                    f'Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree in {len(tilt_positions)} frames.'
+                )
 
-        self.camera_length = int(self.ctrl.magnification.get())
-        self.stepsize = stepsize
-        self.exposure_time = exposure_time
-
-        with open(self.path / 'summary.txt', 'a') as f:
-            print(
-                f'{self.now}: Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree in {len(tilt_positions)} frames.',
-                file=f,
+            self.logger.info(
+                f'Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree (camera length: {self.camera_length} mm).'
             )
-            print(
-                f'Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree in {len(tilt_positions)} frames.'
-            )
 
-        self.logger.info(
-            f'Data collected from {start_angle:.2f} degree to {end_angle:.2f} degree (camera length: {self.camera_length} mm).'
-        )
+            self.current_angle = angle
+            print(f'Done, current angle = {self.current_angle:.2f} degrees')
 
-        self.current_angle = angle
-        print(f'Done, current angle = {self.current_angle:.2f} degrees')
+            if image_mode != 'diff':
+                ctrl.mode.set(image_mode)
 
-        if image_mode != 'diff':
-            ctrl.mode.set(image_mode)
+        finally:
+            if cam_blocked:
+                try:
+                    ctrl.cam.unblock()
+                except Exception:
+                    pass
 
     def finalize(self):
         """Finalize data collection after `self.start_collection` has been run.
@@ -144,15 +169,37 @@ class Experiment(ExperimentBase):
         Write data in `self.buffer` to path given by `self.path`.
         """
         self.logger.info(f'Data saving path: {self.path}')
-        self.rotation_axis = config.camera.camera_rotation_vs_stage_xy
+        self.rotation_axis = getattr(config.camera, 'camera_rotation_vs_stage_xy', 0.0)
 
-        self.pixelsize = config.calibration['diff']['pixelsize'][
-            self.camera_length
-        ]  # px / Angstrom
-        self.physical_pixelsize = config.camera.physical_pixelsize  # mm
-        self.wavelength = config.microscope.wavelength  # angstrom
-        self.stretch_azimuth = config.camera.stretch_azimuth
-        self.stretch_amplitude = config.camera.stretch_amplitude
+        # If collection fails before camera_length is set, avoid crashing in finalize()
+        if not hasattr(self, 'camera_length'):
+            self.pixelsize = None
+            if self.logger:
+                self.logger.error(
+                    'Finalize called but camera_length was never set (collection failed early).'
+                )
+            print(
+                'WARNING: Collection failed before camera_length was set; skipping finalize().'
+            )
+            return
+
+        try:
+            self.pixelsize = config.calibration['diff']['pixelsize'][
+                self.camera_length
+            ]  # px / Angstrom
+        except Exception as e:
+            self.pixelsize = None
+            if self.logger:
+                self.logger.exception(
+                    'Pixelsize calibration missing for camera_length=%s', self.camera_length
+                )
+            print(
+                f'WARNING: pixelsize calibration missing for camera_length={self.camera_length}. ({e})'
+            )
+        self.physical_pixelsize = getattr(config.camera, 'physical_pixelsize', None)  # mm
+        self.wavelength = getattr(config.microscope, 'wavelength', None)  # angstrom
+        self.stretch_azimuth = getattr(config.camera, 'stretch_azimuth', 0.0)
+        self.stretch_amplitude = getattr(config.camera, 'stretch_amplitude', 0.0)
 
         with open(self.path / 'summary.txt', 'a') as f:
             print(f'Rotation range: {self.end_angle - self.start_angle:.2f} degrees', file=f)
@@ -162,14 +209,55 @@ class Experiment(ExperimentBase):
             print(f'Pixelsize: {self.pixelsize} px/Angstrom', file=f)
             print(f'Physical pixelsize: {self.physical_pixelsize} um', file=f)
             print(f'Wavelength: {self.wavelength} Angstrom', file=f)
-            print(f'Stretch amplitude: {self.stretch_azimuth} %', file=f)
-            print(f'Stretch azimuth: {self.stretch_amplitude} degrees', file=f)
+            print(f'Stretch amplitude: {self.stretch_amplitude} %', file=f)
+            print(f'Stretch azimuth: {self.stretch_azimuth} degrees', file=f)
             print(f'Rotation axis: {self.rotation_axis} radians', file=f)
             print(f'Stepsize: {self.stepsize:.4f} degrees', file=f)
             print(f'Number of frames: {self.nframes}', file=f)
 
+        # --- Log binning (binsize) information for all frames before conversion ---
+        # Note: `ImgConversionDM` may consume/mutate the buffer depending on implementation,
+        # so we log first and pass a shallow copy into the converter.
+        binning_map = {}
+        for frame_index, _img, header in self.buffer:
+            binsize = None
+            if isinstance(header, dict):
+                binsize = (
+                    header.get('ImageBinsize', None)
+                    or header.get('binning', None)
+                    or header.get('Binning', None)
+                )
+            binning_map[int(frame_index)] = binsize
+
+        unique_bins = sorted({b for b in binning_map.values() if b is not None})
+        if self.logger:
+            self.logger.info(
+                'Binning summary (unique ImageBinsize values): %s',
+                unique_bins if unique_bins else 'N/A',
+            )
+        with open(self.path / 'summary.txt', 'a') as f:
+            print(
+                f'Binning summary (unique ImageBinsize values): {unique_bins if unique_bins else "N/A"}',
+                file=f,
+            )
+            print(f'Binning map file: {self.path / "binning_map.txt"}', file=f)
+
+        # Write a per-frame binning map to a separate log file (keeps the main logger concise)
+        binning_log_fn = self.path / 'binning_map.txt'
+        with open(binning_log_fn, 'w', encoding='utf-8') as f:
+            print('# frame_index	ImageBinsize	tiff	mrc', file=f)
+            for k in sorted(binning_map):
+                tiff_fn = (self.tiff_path / f'{k:05d}.tiff') if self.write_tiff else ''
+                mrc_fn = (self.mrc_path / f'{k:05d}.mrc') if self.write_red else ''
+                print(f'{k:05d}	{binning_map[k]}	{tiff_fn}	{mrc_fn}', file=f)
+
+        if self.logger:
+            self.logger.info('Binning map written to: %s', binning_log_fn)
+
+        buffer_copy = list(self.buffer)
+
         img_conv = ImgConversion(
-            buffer=self.buffer,
+            buffer=buffer_copy,
             osc_angle=self.stepsize,
             start_angle=self.start_angle,
             end_angle=self.end_angle,
@@ -179,16 +267,31 @@ class Experiment(ExperimentBase):
             pixelsize=self.pixelsize,
             physical_pixelsize=self.physical_pixelsize,
             wavelength=self.wavelength,
-            stretch_amplitude=self.stretch_amplitude,
-            stretch_azimuth=self.stretch_azimuth,
         )
 
         print('Writing data files...')
-        img_conv.threadpoolwriter(tiff_path=self.tiff_path, mrc_path=self.mrc_path, workers=8)
+        img_conv.threadpoolwriter(
+            tiff_path=self.tiff_path if self.write_tiff else None,
+            mrc_path=self.mrc_path if self.write_red else None,
+            workers=8,
+        )
 
         print('Writing input files...')
-        img_conv.write_ed3d(self.mrc_path)
-        img_conv.write_pets_inp(self.path)
+        if self.write_red:
+            img_conv.write_ed3d(self.mrc_path)
+        else:
+            if self.logger:
+                self.logger.info(
+                    'Skipping REDp/ED3D output (MRC) because it is disabled in the GUI.'
+                )
+
+        if self.write_tiff:
+            img_conv.write_pets_inp(self.path)
+        else:
+            if self.logger:
+                self.logger.info(
+                    'Skipping PETS output (TIFF) because it is disabled in the GUI.'
+                )
 
         img_conv.write_beam_centers(self.path)
 

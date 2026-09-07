@@ -85,6 +85,15 @@ class VideoStreamFrame(LabelFrame, ModuleFrameMixin):
         self.var_frametime.set(self.frametime)
         self.var_frametime.trace_add('write', self.update_frametime)
 
+        # Default binsize used for preview acquisition.
+        # Many camera backends expose `possible_binsizes`; fall back gracefully.
+        self.possible_binsizes = getattr(self.stream.cam, 'possible_binsizes', None)
+        if not self.possible_binsizes:
+            self.possible_binsizes = [self.stream.default_binsize]
+
+        self.var_binsize = IntVar(value=self.stream.default_binsize)
+        self.var_binsize.trace_add('write', self.update_binsize)
+
         self.var_brightness = DoubleVar(value=self.brightness)
         self.var_brightness.trace_add('write', self.update_brightness)
 
@@ -155,6 +164,16 @@ class VideoStreamFrame(LabelFrame, ModuleFrameMixin):
         Label(frame, width=lwidth, text='exposure (s)').grid(row=1, column=0)
         self.e_frametime.grid(row=1, column=1)
 
+        Label(frame, width=lwidth, text='Binning').grid(row=1, column=2)
+        self.cb_binsize = Combobox(
+            frame,
+            width=ewidth,
+            textvariable=self.var_binsize,
+            values=list(self.possible_binsizes),
+            state='readonly',
+        )
+        self.cb_binsize.grid(row=1, column=3)
+
         self.e_brightness = Spinbox(
             frame,
             width=ewidth,
@@ -164,10 +183,10 @@ class VideoStreamFrame(LabelFrame, ModuleFrameMixin):
             increment=0.1,
         )
 
-        Label(frame, width=lwidth, text='Brightness').grid(row=1, column=2)
-        self.e_brightness.grid(row=1, column=3)
+        Label(frame, width=lwidth, text='Brightness').grid(row=1, column=4)
+        self.e_brightness.grid(row=1, column=5)
 
-        Label(frame, width=lwidth, text='DisplayRange').grid(row=1, column=4)
+        Label(frame, width=lwidth, text='DisplayRange').grid(row=1, column=6)
         self.e_display_range = Spinbox(
             frame,
             width=ewidth,
@@ -176,7 +195,7 @@ class VideoStreamFrame(LabelFrame, ModuleFrameMixin):
             to=self.display_range_default,
             increment=1000,
         )
-        self.e_display_range.grid(row=1, column=5)
+        self.e_display_range.grid(row=1, column=7)
 
         frame.pack()
 
@@ -210,6 +229,18 @@ class VideoStreamFrame(LabelFrame, ModuleFrameMixin):
             pass
         else:
             self.stream.update_frametime(self.frametime)
+
+    def update_binsize(self, name, index, mode):
+        try:
+            binsize = int(self.var_binsize.get())
+        except BaseException:
+            return
+        else:
+            try:
+                self.stream.update_binsize(binsize)
+            except BaseException:
+                # keep GUI responsive even if camera backend rejects binsize
+                pass
 
     def update_brightness(self, name, index, mode):
         # print name, index, mode

@@ -151,6 +151,20 @@ class VideoStream(threading.Thread):
             except AttributeError:
                 raise reraise_on_fail
 
+    def update_binsize(self, binsize: int) -> None:
+        """Update the default binsize used for preview acquisition.
+
+        This affects the passive acquisition loop (LiveVideoStream) and is
+        also written back to the underlying camera object, so subsequent
+        controller calls that rely on `cam.default_binsize` are consistent.
+        """
+        binsize = int(binsize)
+        self.default_binsize = binsize
+        try:
+            self.cam.default_binsize = binsize
+        except Exception:
+            pass
+
     def close(self):
         pass
 
@@ -239,6 +253,11 @@ class LiveVideoStream(VideoStream):
         self.frametime = frametime
         self.grabber.frametime = frametime
 
+    def update_binsize(self, binsize: int) -> None:
+        super().update_binsize(binsize)
+        # ensure the passive acquisition loop uses the new binsize
+        self.grabber.default_binsize = int(binsize)
+
     def close(self):
         self.grabber.stop()
 
@@ -297,6 +316,9 @@ class FakeVideoStream(VideoStream):
 
     def update_frametime(self, frametime):
         self.frametime = frametime
+
+    def update_binsize(self, binsize: int) -> None:
+        super().update_binsize(binsize)
 
     def show_stream(self):
         from instamatic.gui import videostream_frame

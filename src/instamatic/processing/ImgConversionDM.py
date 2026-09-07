@@ -24,10 +24,18 @@ class ImgConversionDM(ImgConversion):
         pixelsize: float = None,  # p/Angstrom, size of the pixels (overrides camera_length)
         physical_pixelsize: float = None,  # mm, physical size of the pixels (overrides camera length)
         wavelength: float = None,  # Angstrom, relativistic wavelength of the electron beam
+        stretch_amplitude: float = 0.0,  # ignored (compat)
+        stretch_azimuth: float = 0.0,  # ignored (compat)
         method: str = 'continuous-rotation 3D ED',  # or 'stills' or 'precession', used for CIF/documentation
     ):
         if flatfield is not None:
-            flatfield, h = read_tiff(flatfield)
+            try:
+                flatfield, _h = read_tiff(flatfield)
+            except Exception as e:
+                logger.warning(
+                    f'Flatfield file could not be read ({flatfield}); continuing without flatfield. Error: {e}'
+                )
+                flatfield = None
         self.flatfield = flatfield
 
         self.headers = {}
@@ -35,9 +43,14 @@ class ImgConversionDM(ImgConversion):
 
         self.smv_subdrc = 'data'
 
-        while len(buffer) != 0:
-            i, img, h = buffer.pop(0)
+        if not buffer:
+            raise ValueError(
+                'ImgConversionDM received an empty image buffer; nothing to convert/save.'
+            )
 
+        # Do not mutate the caller's buffer (Experiment may want to inspect it after conversion)
+        data_shape = None
+        for i, img, h in list(buffer):
             self.headers[i] = h
 
             if self.flatfield is not None:
@@ -45,11 +58,14 @@ class ImgConversionDM(ImgConversion):
             else:
                 self.data[i] = img
 
+            if data_shape is None:
+                data_shape = img.shape
+
         self.observed_range = set(self.data.keys())
         self.complete_range = set(range(min(self.observed_range), max(self.observed_range) + 1))
         self.missing_range = self.observed_range ^ self.complete_range
 
-        self.data_shape = img.shape
+        self.data_shape = data_shape
 
         self.pixelsize = pixelsize
         self.physical_pixelsize = physical_pixelsize
@@ -58,6 +74,13 @@ class ImgConversionDM(ImgConversion):
         self.use_beamstop = False
         self.mean_beam_center, self.beam_center_std = self.get_beam_centers()
 
+        if self.wavelength is None or self.physical_pixelsize is None or self.pixelsize is None:
+            raise ValueError(
+                f'Missing required calibration for distance calculation: '
+                f'wavelength={self.wavelength}, physical_pixelsize={self.physical_pixelsize}, pixelsize={self.pixelsize}. '
+                'Provide these in config (microscope.wavelength, camera.physical_pixelsize, calibration.diff.pixelsize) '
+                'or pass them explicitly.'
+            )
         self.distance = (1 / self.wavelength) * (self.physical_pixelsize / self.pixelsize)
         self.osc_angle = osc_angle
         self.start_angle = start_angle
@@ -72,7 +95,7 @@ class ImgConversionDM(ImgConversion):
         self.name = 'DigitalMicrograph'
         self.method = method
 
-        from .XDS_template import XDS_template_DM as XDS_template
+        from .XDS_templateDM import XDS_template
 
         self.XDS_template = XDS_template
 

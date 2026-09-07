@@ -58,10 +58,10 @@ class ExperimentalRED(LabelFrame, ModuleFrameMixin):
 
         frame = Frame(self)
         Label(frame, text='Output formats:').grid(row=5, columnspan=2, sticky='EW')
-        Checkbutton(
-            frame, text='PETS (.tiff)', variable=self.var_save_tiff, state=DISABLED
-        ).grid(row=5, column=2, sticky='EW')
-        Checkbutton(frame, text='REDp (.mrc)', variable=self.var_save_red, state=DISABLED).grid(
+        Checkbutton(frame, text='PETS (.tiff)', variable=self.var_save_tiff).grid(
+            row=5, column=2, sticky='EW'
+        )
+        Checkbutton(frame, text='REDp (.mrc)', variable=self.var_save_red).grid(
             row=5, column=3, sticky='EW'
         )
         frame.grid_columnconfigure(0, weight=1)
@@ -126,6 +126,8 @@ class ExperimentalRED(LabelFrame, ModuleFrameMixin):
             'exposure_time': self.var_exposure_time.get(),
             'tilt_range': self.var_tilt_range.get(),
             'stepsize': self.var_stepsize.get(),
+            'write_tiff': self.var_save_tiff.get(),
+            'write_red': self.var_save_red.get(),
             'task': task,
         }
         return params
@@ -141,6 +143,9 @@ def acquire_data_RED(controller, **kwargs):
     tilt_range = kwargs['tilt_range']
     stepsize = kwargs['stepsize']
 
+    write_tiff = kwargs.get('write_tiff', True)
+    write_red = kwargs.get('write_red', True)
+
     if task == 'start':
         flatfield = controller.module_io.get_flatfield()
 
@@ -148,16 +153,25 @@ def acquire_data_RED(controller, **kwargs):
         expdir.mkdir(exist_ok=True, parents=True)
 
         controller.red_exp = RED.Experiment(
-            ctrl=controller.ctrl, path=expdir, log=controller.log, flatfield=flatfield
+            ctrl=controller.ctrl,
+            path=expdir,
+            log=controller.log,
+            flatfield=flatfield,
+            write_tiff=write_tiff,
+            write_red=write_red,
         )
         controller.red_exp.start_collection(
             exposure_time=exposure_time, tilt_range=tilt_range, stepsize=stepsize
         )
     elif task == 'continue':
+        controller.red_exp.write_tiff = bool(write_tiff)
+        controller.red_exp.write_red = bool(write_red)
         controller.red_exp.start_collection(
             exposure_time=exposure_time, tilt_range=tilt_range, stepsize=stepsize
         )
     elif task == 'stop':
+        controller.red_exp.write_tiff = bool(write_tiff)
+        controller.red_exp.write_red = bool(write_red)
         controller.red_exp.finalize()
         del controller.red_exp
 

@@ -598,12 +598,13 @@ class TEMController:
         arr : np.array
             Image as 2D numpy array.
         """
-        future = self.get_future_image(exposure=exposure, binsize=binsize)
+        # NOTE: SEMCCD/DM socket backends are not thread-safe; acquire synchronously here.
+        # Acquire on the current thread (important for Gatan socket stability)
+        arr = self.get_raw_image(exposure=exposure, binsize=binsize)
 
         mag = self.magnification.value
         mode = self.mode.get()
 
-        arr = future.result()
         arr = rotate_image(arr, mode=mode, mag=mag)
 
         return arr
